@@ -1,8 +1,7 @@
 //
 //  PlushApp.swift
 //  Plush
-//
-//  Created by Enric Shajan Neelamkavil(UST,IN) on 18/07/26.
+
 //
 
 import SwiftUI
@@ -12,7 +11,9 @@ import SwiftData
 struct PlushApp: App {
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
-            Item.self,
+            Account.self,
+            Category.self,
+            Transaction.self,
         ])
         let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
 
@@ -22,6 +23,10 @@ struct PlushApp: App {
             fatalError("Could not create ModelContainer: \(error)")
         }
     }()
+
+    init() {
+        CategorySeeder.seedIfNeeded(sharedModelContainer.mainContext)
+    }
 
     var body: some Scene {
         WindowGroup {

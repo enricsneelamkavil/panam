@@ -9,53 +9,48 @@ import SwiftUI
 import SwiftData
 
 struct ContentView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
+    @State private var selectedTab: AppTab = .home
+    @State private var showingAddTransaction = false
+
+    enum AppTab {
+        case home
+        case transactions
+        case investments
+        case add
+    }
 
     var body: some View {
-        NavigationSplitView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
-                    }
-                }
-                .onDelete(perform: deleteItems)
+        TabView(selection: $selectedTab) {
+            Tab("Home", systemImage: "house.fill", value: AppTab.home) {
+                DashboardView()
             }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
-                }
+            Tab("Transactions", systemImage: "list.bullet", value: AppTab.transactions) {
+                TransactionsView()
             }
-        } detail: {
-            Text("Select an item")
+            Tab("Investments", systemImage: "chart.line.uptrend.xyaxis", value: AppTab.investments) {
+                InvestmentsView()
+            }
+            // role: .search renders this as the detached circle beside the main capsule,
+            // matching the Apple Music / App Store layout natively.
+            Tab("Add", systemImage: "plus", value: AppTab.add, role: .search) {
+                Color.clear
+            }
         }
-    }
-
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
+        .onChange(of: selectedTab) { oldValue, newValue in
+            if newValue == .add {
+                showingAddTransaction = true
+                // Reset immediately so the content never flashes and the
+                // previously active tab stays visually selected.
+                selectedTab = oldValue
             }
+        }
+        .sheet(isPresented: $showingAddTransaction) {
+            AddEditTransactionView(transaction: nil)
         }
     }
 }
 
 #Preview {
     ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
+        .modelContainer(for: [Account.self, Category.self, Transaction.self], inMemory: true)
 }
