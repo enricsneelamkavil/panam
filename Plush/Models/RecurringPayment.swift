@@ -12,6 +12,9 @@ final class RecurringPayment {
     var isSubscription: Bool
     var isNecessary: Bool?   // only meaningful when isSubscription is true
     var isActive: Bool       // false = paused/ended, stop generating new occurrences
+    var autopayEnabled: Bool = false   // occurrences auto-marked paid on due date
+    var isIncome: Bool = false         // true = expected incoming money (e.g. salary)
+    var cancelledDate: Date? = nil     // set when isActive flipped to false via Cancel action
 
     @Relationship(deleteRule: .cascade, inverse: \RecurringOccurrence.parent)
     var occurrences: [RecurringOccurrence] = []
@@ -34,5 +37,5 @@ final class RecurringPayment {
 enum Cadence: String, Codable, CaseIterable {
     case daily, monthly, quarterly, halfYearly, yearly
 
-    var reminderEligible: Bool { self != .daily }
+    nonisolated var reminderEligible: Bool { self != .daily }
 }

@@ -25,6 +25,10 @@ enum MoneyEventSync {
         context.insert(makeEvent(from: installment))
     }
 
+    static func sync(paidLoanInstallment installment: LoanInstallment, context: ModelContext) {
+        context.insert(makeEvent(from: installment))
+    }
+
     static func sync(cardPayment payment: CardPayment, context: ModelContext) {
         context.insert(makeEvent(from: payment))
     }
@@ -34,14 +38,21 @@ enum MoneyEventSync {
     static func makeEvent(from tx: Transaction) -> MoneyEvent {
         let eventType: MoneyEventType
         switch tx.type {
-        case .income:       eventType = .income
-        case .selfTransfer: eventType = .transfer
-        case .expense:      eventType = tx.isSplit ? .splitExpense : .expense
+        case .income:         eventType = .income
+        case .selfTransfer:   eventType = .transfer
+        case .cashWithdrawal: eventType = .cashWithdrawal
+        case .refund:         eventType = .refund
+        case .interest:       eventType = .interest
+        case .dividend:       eventType = .dividend
+        case .taxAndFee:      eventType = .taxAndFee
+        case .adjustment:     eventType = .adjustment
+        case .expense:        eventType = tx.isSplit ? .splitExpense : .expense
         }
         let event = MoneyEvent(type: eventType, amount: tx.amount, date: tx.date, note: tx.note)
         event.account = tx.account
         event.toAccount = tx.toAccount
         event.category = tx.category
+        event.merchant = tx.merchantName
         event.paymentMethod = tx.paymentMethod
         event.upiApp = tx.upiApp
         event.isSplit = tx.isSplit
@@ -52,7 +63,9 @@ enum MoneyEventSync {
     static func makeEvent(from occ: RecurringOccurrence) -> MoneyEvent {
         let categoryName = occ.parent?.category?.name.lowercased() ?? ""
         let eventType: MoneyEventType
-        if categoryName.contains("insurance") {
+        if occ.parent?.isIncome == true {
+            eventType = .income
+        } else if categoryName.contains("insurance") {
             eventType = .insurancePremium
         } else if occ.parent?.isSubscription == true {
             eventType = .subscription
@@ -92,6 +105,17 @@ enum MoneyEventSync {
     static func makeEvent(from installment: EMIInstallment) -> MoneyEvent {
         let event = MoneyEvent(
             type: .emi,
+            amount: installment.amount,
+            date: installment.paidDate ?? installment.dueDate,
+            note: installment.parent?.name ?? ""
+        )
+        event.account = installment.parent?.account
+        return event
+    }
+
+    static func makeEvent(from installment: LoanInstallment) -> MoneyEvent {
+        let event = MoneyEvent(
+            type: .loan,
             amount: installment.amount,
             date: installment.paidDate ?? installment.dueDate,
             note: installment.parent?.name ?? ""
