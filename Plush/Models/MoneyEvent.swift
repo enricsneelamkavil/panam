@@ -23,6 +23,7 @@ final class MoneyEvent {
     var isSplit: Bool
     var myPortionAmount: Double?
     var legacyRecordID: PersistentIdentifier?   // traceability back to the original record during migration
+    var legacyRecordDescription: String?        // human-readable description used during one-time migration
 
     init(type: MoneyEventType, amount: Double, date: Date, note: String = "") {
         self.type = type

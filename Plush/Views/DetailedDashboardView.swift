@@ -87,7 +87,7 @@ struct DetailedDashboardView: View {
             for transaction in transactions where transaction.date > sampleDate {
                 guard let account = transaction.account else { continue }
                 switch account.type {
-                case .bank, .cash:
+                case .bank, .cash, .wallet:
                     bankCash -= transaction.type == .income ? transaction.amount : -transaction.amount
                 case .creditCard:
                     creditCard -= transaction.type == .expense ? transaction.amount : -transaction.amount

@@ -34,15 +34,16 @@ final class FinanceChatSession {
             Indian rupees.
             """
 
+        let container = modelContext.container
         session = LanguageModelSession(
             tools: [
-                SpendSummaryTool(modelContext: modelContext),
-                SubscriptionTotalTool(modelContext: modelContext),
-                UpcomingDuesTool(modelContext: modelContext),
-                NetWorthTool(modelContext: modelContext),
-                AccountBalanceTool(modelContext: modelContext),
-                LendingBalanceTool(modelContext: modelContext),
-                InvestmentTotalTool(modelContext: modelContext),
+                SpendSummaryTool(modelContainer: container),
+                SubscriptionTotalTool(modelContainer: container),
+                UpcomingDuesTool(modelContainer: container),
+                NetWorthTool(modelContainer: container),
+                AccountBalanceTool(modelContainer: container),
+                LendingBalanceTool(modelContainer: container),
+                InvestmentTotalTool(modelContainer: container),
             ],
             instructions: instructions
         )

@@ -66,6 +66,7 @@ struct AccountsView: View {
         switch type {
         case .bank: "Bank"
         case .cash: "Cash"
+        case .wallet: "Wallet"
         case .creditCard: "Credit Card"
         }
     }
@@ -99,6 +100,7 @@ private struct AccountRow: View {
         switch account.type {
         case .bank: "Bank"
         case .cash: "Cash"
+        case .wallet: "Wallet"
         case .creditCard: "Credit Card"
         }
     }

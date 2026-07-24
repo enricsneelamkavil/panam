@@ -1,3 +1,4 @@
+import Foundation
 import FoundationModels
 
 @Generable
@@ -16,4 +17,19 @@ struct ParsedTransaction {
 
     @Guide(description: "A short note capturing any extra detail mentioned, or nil")
     var note: String?
+
+    @Guide(description: "The transaction date as yyyy-MM-dd (ISO 8601), resolved from any spoken reference (e.g. 'yesterday', 'last Friday'); nil or omitted means today")
+    var resolvedDateString: String?
+
+    @Guide(description: "The payment method mentioned (e.g. 'cash', 'UPI', 'card'), or nil if not stated")
+    var paymentMethodName: String?
+}
+
+extension ParsedTransaction {
+    var resolvedDate: Date {
+        guard let str = resolvedDateString else { return .now }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        return fmt.date(from: str) ?? .now
+    }
 }

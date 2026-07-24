@@ -7,7 +7,7 @@ import SwiftUI
 import SwiftData
 
 // Shared card surface applied to every dashboard tile.
-private extension View {
+extension View {
     func dashboardCard() -> some View {
         padding(16)
             .background(

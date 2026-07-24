@@ -107,7 +107,7 @@ struct TransactionsView: View {
                     ContentUnavailableView(
                         "No Results",
                         systemImage: "magnifyingglass",
-                        description: Text("No events match "\(searchText)".")
+                        description: Text("No events match \"\(searchText)\".")
                     )
                 }
             }
@@ -370,7 +370,7 @@ private struct MoneyEventDetailSheet: View {
 
 // MARK: - Existing transaction row (unchanged)
 
-private struct TransactionRow: View {
+struct TransactionRow: View {
     let transaction: Transaction
 
     var body: some View {

@@ -46,7 +46,7 @@ enum RecurringOccurrenceGenerator {
     }
 }
 
-private extension Cadence {
+extension Cadence {
     /// Calendar step between consecutive occurrences.
     var step: DateComponents {
         switch self {
