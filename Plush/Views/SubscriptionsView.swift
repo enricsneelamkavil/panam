@@ -8,7 +8,7 @@ import SwiftData
 
 extension Cadence {
     /// Approximate days per billing cycle, for cost-per-day comparisons.
-    var cycleDays: Double {
+    nonisolated var cycleDays: Double {
         switch self {
         case .daily: 1
         case .monthly: 30
@@ -20,70 +20,139 @@ extension Cadence {
 }
 
 extension RecurringPayment {
-    var costPerDay: Double {
+    nonisolated var costPerDay: Double {
         expectedAmount / cadence.cycleDays
     }
 
-    var monthlyEquivalentCost: Double {
+    nonisolated var monthlyEquivalentCost: Double {
         costPerDay * 30
     }
 }
 
-/// Active subscriptions ranked by what they really cost per day.
-/// Pushed from RecurringView, so it doesn't create its own NavigationStack.
+private enum SubscriptionTab {
+    case active, cancelled
+}
+
+/// Active/Cancelled subscriptions. Pushed from RecurringView — no own NavigationStack.
 struct SubscriptionsView: View {
+    @Environment(\.modelContext) private var modelContext
+
     @Query(filter: #Predicate<RecurringPayment> { $0.isSubscription && $0.isActive })
-    private var subscriptions: [RecurringPayment]
+    private var activeSubscriptions: [RecurringPayment]
 
-    private static let currencyFormat = FloatingPointFormatStyle<Double>.Currency
-        .currency(code: "INR")
-        .locale(Locale(identifier: "en_IN"))
+    @Query(filter: #Predicate<RecurringPayment> { $0.isSubscription && !$0.isActive })
+    private var cancelledSubscriptions: [RecurringPayment]
 
-    private var sortedByCostPerDay: [RecurringPayment] {
-        subscriptions.sorted { $0.costPerDay > $1.costPerDay }
+    @State private var tab: SubscriptionTab = .active
+
+    private var sortedActive: [RecurringPayment] {
+        activeSubscriptions.sorted { $0.costPerDay > $1.costPerDay }
+    }
+
+    private var sortedCancelled: [RecurringPayment] {
+        cancelledSubscriptions.sorted {
+            ($0.cancelledDate ?? .distantPast) > ($1.cancelledDate ?? .distantPast)
+        }
     }
 
     private var totalMonthlyEquivalent: Double {
-        subscriptions.reduce(0) { $0 + $1.monthlyEquivalentCost }
+        activeSubscriptions.reduce(0) { $0 + $1.monthlyEquivalentCost }
     }
 
     var body: some View {
         List {
             Section {
-                VStack(spacing: 4) {
-                    Text("Monthly Equivalent")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Text(totalMonthlyEquivalent, format: Self.currencyFormat)
-                        .font(.largeTitle.bold().monospacedDigit())
+                Picker("", selection: $tab) {
+                    Text("Active").tag(SubscriptionTab.active)
+                    Text("Cancelled").tag(SubscriptionTab.cancelled)
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
+                .pickerStyle(.segmented)
             }
 
-            Section {
-                ForEach(sortedByCostPerDay) { subscription in
-                    SubscriptionRow(subscription: subscription)
+            if tab == .active {
+                Section {
+                    VStack(spacing: 4) {
+                        Text("Monthly Equivalent")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        MaskableCurrencyText(amount: totalMonthlyEquivalent)
+                            .font(.largeTitle.bold().monospacedDigit())
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                }
+
+                Section {
+                    ForEach(sortedActive) { subscription in
+                        SubscriptionRow(subscription: subscription)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    cancelSubscription(subscription)
+                                } label: {
+                                    Label("Cancel", systemImage: "xmark.circle")
+                                }
+                            }
+                    }
+                }
+            } else {
+                Section {
+                    ForEach(sortedCancelled) { subscription in
+                        CancelledSubscriptionRow(subscription: subscription)
+                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                Button {
+                                    reactivateSubscription(subscription)
+                                } label: {
+                                    Label("Reactivate", systemImage: "arrow.uturn.backward.circle")
+                                }
+                                .tint(.green)
+                            }
+                    }
                 }
             }
         }
         .overlay {
-            if subscriptions.isEmpty {
+            if tab == .active && activeSubscriptions.isEmpty {
                 ContentUnavailableView(
                     "No Subscriptions",
                     systemImage: "arrow.triangle.2.circlepath",
                     description: Text("Mark a recurring payment as a subscription to track it here.")
                 )
+            } else if tab == .cancelled && cancelledSubscriptions.isEmpty {
+                ContentUnavailableView(
+                    "No Cancelled Subscriptions",
+                    systemImage: "xmark.circle",
+                    description: Text("Swipe left on an active subscription to cancel it.")
+                )
             }
         }
         .navigationTitle("Subscriptions")
     }
+
+    private func cancelSubscription(_ payment: RecurringPayment) {
+        payment.isActive = false
+        payment.cancelledDate = .now
+        let now = Date.now
+        for occurrence in payment.occurrences where !occurrence.isPaid && occurrence.dueDate > now {
+            modelContext.delete(occurrence)
+        }
+    }
+
+    private func reactivateSubscription(_ payment: RecurringPayment) {
+        payment.isActive = true
+        payment.cancelledDate = nil
+        RecurringOccurrenceGenerator.generateOccurrences(for: payment, context: modelContext)
+    }
 }
 
+// MARK: - Active row
+
 private struct SubscriptionRow: View {
+    @Environment(PrivacyState.self) private var privacyState: PrivacyState?
+
     let subscription: RecurringPayment
 
     private var costPerDayLabel: String {
+        guard privacyState?.amountsHidden != true else { return "••••••/day" }
         let amount = subscription.costPerDay.formatted(
             .currency(code: "INR")
             .locale(Locale(identifier: "en_IN"))
@@ -95,7 +164,14 @@ private struct SubscriptionRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(subscription.name)
+                HStack(spacing: 4) {
+                    Text(subscription.name)
+                    if subscription.autopayEnabled {
+                        Image(systemName: "a.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.tint)
+                    }
+                }
                 Text("\(subscription.cadence.displayName) · \(subscription.expectedAmount.formatted(.currency(code: "INR").locale(Locale(identifier: "en_IN"))))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -139,6 +215,37 @@ private struct SubscriptionRow: View {
         case true: subscription.isNecessary = false
         case false: subscription.isNecessary = true
         }
+    }
+}
+
+// MARK: - Cancelled row
+
+private struct CancelledSubscriptionRow: View {
+    let subscription: RecurringPayment
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(subscription.name)
+
+                if let date = subscription.cancelledDate {
+                    Text("Cancelled \(date.formatted(date: .abbreviated, time: .omitted))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("\(subscription.cadence.displayName) · \(subscription.expectedAmount.formatted(.currency(code: "INR").locale(Locale(identifier: "en_IN"))))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            MaskableCurrencyText(amount: subscription.expectedAmount)
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .opacity(0.6)
     }
 }
 

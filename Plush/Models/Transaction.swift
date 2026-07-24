@@ -7,8 +7,9 @@ final class Transaction {
     var date: Date
     var note: String
     var type: TransactionType
+    var merchantName: String?
     var account: Account?
-    /// The destination account for .selfTransfer transactions. `account` is the source.
+    /// The destination account for transfer-like transactions. `account` is the source.
     var toAccount: Account?
     var category: Category?
     var paymentMethod: PaymentMethod?
@@ -42,6 +43,51 @@ extension Transaction {
 enum TransactionType: String, Codable, CaseIterable {
     case income, expense
     case selfTransfer = "Self Transfer"
+    case refund
+    case cashWithdrawal = "Cash Withdrawal"
+    case interest, dividend
+    case taxAndFee = "Tax and Fee"
+    case adjustment
+}
+
+extension TransactionType {
+    /// True for types that increase account balance (income-direction).
+    /// Used by balance adjustment and 7-day change calculation.
+    /// Note: adjustment has a signed amount and bypasses this entirely.
+    nonisolated var isIncomeLike: Bool {
+        switch self {
+        case .income, .interest, .dividend, .refund: true
+        default: false
+        }
+    }
+
+    /// True for account-to-account transfers. Excluded from both Income and Expense totals.
+    nonisolated var isTransferLike: Bool {
+        switch self {
+        case .selfTransfer, .cashWithdrawal: true
+        default: false
+        }
+    }
+
+    /// True for types that should not appear in Income or Expense aggregations.
+    /// Includes transfers (no net flow) and adjustments (balance corrections, not real transactions).
+    nonisolated var isExcludedFromFlow: Bool {
+        isTransferLike || self == .adjustment
+    }
+
+    nonisolated var displayName: String {
+        switch self {
+        case .income: "Income"
+        case .expense: "Expense"
+        case .selfTransfer: "Transfer"
+        case .refund: "Refund"
+        case .cashWithdrawal: "Cash Withdrawal"
+        case .interest: "Interest"
+        case .dividend: "Dividend"
+        case .taxAndFee: "Tax & Fee"
+        case .adjustment: "Adjustment"
+        }
+    }
 }
 
 enum PaymentMethod: String, Codable, CaseIterable {

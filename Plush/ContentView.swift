@@ -9,23 +9,26 @@ import SwiftUI
 import SwiftData
 
 struct ContentView: View {
-    @State private var selectedTab: AppTab = .home
+    @State private var selectedTab: AppTab = .today
     @State private var showingAddTransaction = false
 
     enum AppTab {
-        case home
-        case transactions
-        case investments
-        case add
+        case today, flow, analyze, investments, add
     }
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            Tab("Home", systemImage: "house.fill", value: AppTab.home) {
+            Tab("Today", systemImage: "house.fill", value: AppTab.today) {
                 DashboardView()
             }
-            Tab("Transactions", systemImage: "list.bullet", value: AppTab.transactions) {
+            Tab("Flow", systemImage: "list.bullet", value: AppTab.flow) {
                 TransactionsView()
+            }
+            Tab("Analyze", systemImage: "chart.bar.fill", value: AppTab.analyze) {
+                NavigationStack {
+                    DetailedDashboardView()
+                        .navigationTitle("Analyze")
+                }
             }
             Tab("Investments", systemImage: "chart.line.uptrend.xyaxis", value: AppTab.investments) {
                 InvestmentsView()

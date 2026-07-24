@@ -1,37 +1,35 @@
-//
-//  EMIDetailView.swift
-//  Plush
-//
-
 import SwiftUI
 import SwiftData
 
-struct EMIDetailView: View {
-    let emi: CreditCardEMI
+struct LoanDetailView: View {
+    let loan: Loan
 
     @Environment(\.modelContext) private var modelContext
-    @State private var selectedInstallment: EMIInstallment?
+    @State private var selectedInstallment: LoanInstallment?
 
-    private static let currencyFormat = FloatingPointFormatStyle<Double>.Currency
-        .currency(code: "INR")
-        .locale(Locale(identifier: "en_IN"))
-
-    private var sortedInstallments: [EMIInstallment] {
-        emi.installments.sorted { $0.installmentNumber < $1.installmentNumber }
+    private var sortedInstallments: [LoanInstallment] {
+        loan.installments.sorted { $0.installmentNumber < $1.installmentNumber }
     }
 
     var body: some View {
         List {
             Section {
-                LabeledContent("Monthly Amount") {
-                    Text(emi.monthlyAmount, format: Self.currencyFormat)
+                LabeledContent("EMI Amount") {
+                    Text(loan.emiAmount, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
                 }
                 LabeledContent("Principal") {
-                    Text(emi.principalAmount, format: Self.currencyFormat)
+                    Text(loan.principalAmount, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
                 }
-                LabeledContent("Progress", value: "\(emi.paidCount) of \(emi.tenureMonths) paid")
+                if let rate = loan.interestRate {
+                    LabeledContent("Interest Rate", value: "\(rate.formatted(.number.precision(.fractionLength(1...2))))% p.a.")
+                }
+                if let accountName = loan.account?.name {
+                    LabeledContent("Debit Account", value: accountName)
+                }
+                LabeledContent("Progress", value: "\(loan.paidCount) of \(loan.tenureMonths) paid")
                 LabeledContent("Remaining") {
-                    Text(emi.remainingAmount, format: Self.currencyFormat)
+                    MaskableCurrencyText(amount: loan.remainingAmount)
+                        .foregroundStyle(loan.paidCount == loan.tenureMonths ? .secondary : .primary)
                 }
             }
 
@@ -40,17 +38,17 @@ struct EMIDetailView: View {
                     Button {
                         selectedInstallment = installment
                     } label: {
-                        InstallmentRow(installment: installment)
+                        LoanInstallmentRow(installment: installment)
                     }
                     .buttonStyle(.plain)
                 }
             }
         }
-        .navigationTitle(emi.name)
+        .navigationTitle(loan.name)
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $selectedInstallment) { installment in
             if installment.isPaid {
-                PaidInstallmentSummaryView(installment: installment)
+                PaidLoanInstallmentSummaryView(installment: installment)
                     .presentationDetents([.medium])
             } else {
                 PaymentConfirmationSheet(
@@ -65,36 +63,42 @@ struct EMIDetailView: View {
         }
     }
 
-    private func creditCardBillCategory() -> Category? {
+    private func loanEMICategory() -> Category? {
         let descriptor = FetchDescriptor<Category>(
-            predicate: #Predicate { $0.name == "Credit Card Bill" }
+            predicate: #Predicate { $0.name == "Loan EMI" }
         )
-        return try? modelContext.fetch(descriptor).first
+        if let existing = try? modelContext.fetch(descriptor).first {
+            return existing
+        }
+        let category = Category(name: "Loan EMI", icon: "banknote", isPreset: true)
+        modelContext.insert(category)
+        return category
     }
 
-    private func markInstallmentPaid(_ installment: EMIInstallment, actual: Double) {
-        guard let emi = installment.parent else { return }
+    private func markInstallmentPaid(_ installment: LoanInstallment, actual: Double) {
+        guard let loan = installment.parent else { return }
 
         installment.isPaid = true
         installment.paidDate = .now
 
+        let note = "\(loan.name) — EMI \(installment.installmentNumber)/\(loan.tenureMonths)"
         let transaction = Transaction(
             amount: actual,
             date: Calendar.current.startOfDay(for: .now),
-            note: "\(emi.name) — EMI \(installment.installmentNumber)/\(emi.tenureMonths)",
+            note: note,
             type: .expense,
-            account: emi.account,
-            category: creditCardBillCategory()
+            account: loan.account,
+            category: loanEMICategory()
         )
         modelContext.insert(transaction)
         installment.linkedTransaction = transaction
-        emi.account?.applyTransaction(amount: actual, type: .expense)
-        MoneyEventSync.sync(paidEMIInstallment: installment, context: modelContext)
+        loan.account?.applyTransaction(amount: actual, type: .expense)
+        MoneyEventSync.sync(paidLoanInstallment: installment, context: modelContext)
     }
 }
 
-private struct InstallmentRow: View {
-    let installment: EMIInstallment
+private struct LoanInstallmentRow: View {
+    let installment: LoanInstallment
 
     var body: some View {
         HStack {
@@ -105,8 +109,7 @@ private struct InstallmentRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(installment.dueDate, format: .dateTime.day().month(.abbreviated).year())
-                Text(installment.amount,
-                     format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+                Text(installment.amount, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -131,10 +134,10 @@ private struct InstallmentRow: View {
     }
 }
 
-private struct PaidInstallmentSummaryView: View {
+private struct PaidLoanInstallmentSummaryView: View {
     @Environment(\.dismiss) private var dismiss
 
-    let installment: EMIInstallment
+    let installment: LoanInstallment
 
     var body: some View {
         NavigationStack {
@@ -144,38 +147,24 @@ private struct PaidInstallmentSummaryView: View {
                     Text(installment.dueDate, format: .dateTime.day().month(.abbreviated).year())
                 }
                 LabeledContent("Amount") {
-                    Text(installment.amount,
-                         format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+                    Text(installment.amount, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
                 }
                 if let paidDate = installment.paidDate {
                     LabeledContent("Paid On") {
                         Text(paidDate, format: .dateTime.day().month(.abbreviated).year())
                     }
                 }
+                if let tx = installment.linkedTransaction, let acct = tx.account {
+                    LabeledContent("Debited From", value: acct.name)
+                }
             }
-            .navigationTitle("Installment Details")
+            .navigationTitle("Paid Installment")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
+                    Button("Done") { dismiss() }
                 }
             }
         }
     }
-}
-
-#Preview {
-    NavigationStack {
-        EMIDetailView(
-            emi: CreditCardEMI(name: "Preview Phone", principalAmount: 120_000,
-                               monthlyAmount: 10_000, tenureMonths: 12)
-        )
-    }
-    .modelContainer(
-        for: [Account.self, Category.self, Transaction.self,
-              CreditCardEMI.self, EMIInstallment.self],
-        inMemory: true
-    )
 }
