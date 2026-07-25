@@ -408,6 +408,7 @@ struct AddEditTransactionView: View {
                 transaction.upiApp = nil
                 transaction.merchantName = nil
                 selectedAccount.applyTransfer(amount: signedAmount, to: toAccount!)
+                MoneyEventSync.sync(transaction: transaction, context: modelContext)
             } else if type == .adjustment {
                 transaction.toAccount = nil
                 transaction.category = nil
@@ -415,6 +416,7 @@ struct AddEditTransactionView: View {
                 transaction.upiApp = nil
                 transaction.merchantName = nil
                 selectedAccount.applyTransaction(amount: signedAmount, type: type)
+                MoneyEventSync.sync(transaction: transaction, context: modelContext)
             } else {
                 transaction.toAccount = nil
                 transaction.category = selectedCategory
@@ -423,6 +425,7 @@ struct AddEditTransactionView: View {
                 transaction.upiApp = paymentMethod == .upi && !trimmedUPIApp.isEmpty ? trimmedUPIApp : nil
                 transaction.merchantName = merchantNameToStore
                 selectedAccount.applyTransaction(amount: signedAmount, type: type)
+                MoneyEventSync.sync(transaction: transaction, context: modelContext)
             }
         } else {
             let newTransaction = Transaction(
@@ -438,9 +441,11 @@ struct AddEditTransactionView: View {
                 newTransaction.toAccount = toAccount
                 modelContext.insert(newTransaction)
                 selectedAccount.applyTransfer(amount: signedAmount, to: toAccount!)
+                MoneyEventSync.sync(transaction: newTransaction, context: modelContext)
             } else if type == .adjustment {
                 modelContext.insert(newTransaction)
                 selectedAccount.applyTransaction(amount: signedAmount, type: type)
+                MoneyEventSync.sync(transaction: newTransaction, context: modelContext)
             } else {
                 let trimmedUPIApp = upiApp.trimmingCharacters(in: .whitespaces)
                 newTransaction.paymentMethod = paymentMethod
@@ -454,6 +459,7 @@ struct AddEditTransactionView: View {
 
                 modelContext.insert(newTransaction)
                 selectedAccount.applyTransaction(amount: signedAmount, type: type)
+                MoneyEventSync.sync(transaction: newTransaction, context: modelContext)
 
                 if isSplit {
                     createSplitAllocations(for: newTransaction, date: normalizedDate)

@@ -49,8 +49,7 @@ struct RecurringView: View {
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Text(totalMonthlyEquivalent,
-                                 format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+                            MaskableCurrencyText(amount: totalMonthlyEquivalent)
                                 .font(.subheadline.monospacedDigit())
                         }
                     }
@@ -127,7 +126,7 @@ private struct RecurringPaymentRow: View {
                 }
             }
             Spacer()
-            Text(payment.expectedAmount, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+            MaskableCurrencyText(amount: payment.expectedAmount)
                 .font(.body.monospacedDigit())
         }
     }

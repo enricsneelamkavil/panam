@@ -92,6 +92,7 @@ struct AddEditAccountView: View {
                         save()
                     }
                     .disabled(!canSave)
+                    .tint(.appPrimary)
                 }
             }
             .onAppear(perform: populateFromAccount)

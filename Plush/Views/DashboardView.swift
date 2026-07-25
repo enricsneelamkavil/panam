@@ -22,9 +22,9 @@ struct DashboardView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Transaction.date, order: .reverse) private var transactions: [Transaction]
     @Query(sort: \RecurringOccurrence.dueDate) private var occurrences: [RecurringOccurrence]
-    @Query(sort: \Person.name) private var people: [Person]
     @Query private var accounts: [Account]
     @Query private var recurringPayments: [RecurringPayment]
+    @Query private var loans: [Loan]
 
     @State private var occurrenceToPay: RecurringOccurrence?
     @State private var showingChat = false
@@ -132,14 +132,6 @@ struct DashboardView: View {
         }
     }
 
-    private var totalOwedToYou: Double {
-        people.map(\.netBalance).filter { $0 > 0 }.reduce(0, +)
-    }
-
-    private var totalYouOwe: Double {
-        -people.map(\.netBalance).filter { $0 < 0 }.reduce(0, +)
-    }
-
     private var totalBalance: Double {
         accounts.filter { $0.type != .creditCard }.reduce(0) { $0 + $1.balance }
     }
@@ -169,7 +161,7 @@ struct DashboardView: View {
 
     // "netWorth" removed — net worth is now shown directly in the pinned balance card.
     private static let defaultSectionOrder = [
-        "summary", "upcomingDues", "spendBar", "topCategories", "accounts", "lending", "recurring",
+        "summary", "upcomingDues", "spendBar", "topCategories", "accounts", "lending", "recurring", "loans",
     ]
 
     @AppStorage("dashboardSectionOrder") private var sectionOrderJSON = ""
@@ -227,6 +219,15 @@ struct DashboardView: View {
                         Label("Settings", systemImage: "gearshape")
                     }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    NavigationLink {
+                        DetailedDashboardView()
+                            .navigationTitle("Detailed")
+                            .navigationBarTitleDisplayMode(.inline)
+                    } label: {
+                        Label("Detailed View", systemImage: "chart.bar.xaxis")
+                    }
+                }
             }
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
@@ -281,17 +282,6 @@ struct DashboardView: View {
                     .font(.subheadline.monospacedDigit())
                     .foregroundStyle(creditCardDue > 0 ? .red : .secondary)
             }
-
-            NavigationLink {
-                DetailedDashboardView()
-                    .navigationTitle("Detailed")
-                    .navigationBarTitleDisplayMode(.inline)
-            } label: {
-                Text("Detailed View →")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-            }
         }
         .dashboardCard()
     }
@@ -308,6 +298,7 @@ struct DashboardView: View {
         case "accounts":     accountsSection
         case "lending":      lendingSection
         case "recurring":    recurringSection
+        case "loans":        loansSection
         default:             EmptyView()
         }
     }
@@ -392,7 +383,7 @@ struct DashboardView: View {
 
     // MARK: - Card 4: Spend Bar
 
-    private static let barPalette: [Color] = [.blue, .green, .orange, .purple, .pink]
+    fileprivate static let barPalette: [Color] = [.blue, .green, .orange, .purple, .pink]
 
     private var spendSegments: [(id: String, color: Color, share: Double)] {
         guard expenseTotal > 0 else { return [] }
@@ -438,25 +429,6 @@ struct DashboardView: View {
                 }
                 .frame(height: 20)
                 .clipShape(Capsule())
-
-                // Legend: one row per segment with color dot, name, percentage.
-                VStack(spacing: 6) {
-                    ForEach(spendSegments, id: \.id) { segment in
-                        HStack(spacing: 8) {
-                            Circle()
-                                .fill(segment.color)
-                                .frame(width: 8, height: 8)
-                            Text(segment.id == "other" ? "Other" : segment.id)
-                                .font(.caption)
-                                .lineLimit(1)
-                            Spacer()
-                            Text(segment.share.formatted(.percent.precision(.fractionLength(0))))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .padding(.top, 4)
             }
         }
         .dashboardCard()
@@ -483,11 +455,12 @@ struct DashboardView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(categoryTotals.prefix(5), id: \.category.persistentModelID) { entry in
+                ForEach(Array(categoryTotals.prefix(5).enumerated()), id: \.element.category.persistentModelID) { index, entry in
                     CategoryTotalRow(
                         category: entry.category,
                         total: entry.total,
-                        share: entry.total / (categoryTotals.first?.total ?? 1)
+                        share: entry.total / (categoryTotals.first?.total ?? 1),
+                        color: Self.barPalette[index % Self.barPalette.count]
                     )
                 }
             }
@@ -511,14 +484,9 @@ struct DashboardView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                HStack(spacing: 4) {
-                    MaskableCurrencyText(amount: totalBalance)
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.primary)
-                    Image(systemName: "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
         }
         .dashboardCard()
@@ -530,44 +498,14 @@ struct DashboardView: View {
         NavigationLink {
             LendingLedgerView()
         } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Lending")
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-
-                if totalOwedToYou == 0 && totalYouOwe == 0 {
-                    Text("All settled.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if totalOwedToYou > 0 {
-                    HStack {
-                        Text("Owed to you")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        MaskableCurrencyText(amount: totalOwedToYou)
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundStyle(.green)
-                    }
-                }
-                if totalYouOwe > 0 {
-                    HStack {
-                        Text("You owe")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        MaskableCurrencyText(amount: totalYouOwe)
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundStyle(.red)
-                    }
-                }
+            HStack {
+                Text("Lending")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
         }
         .dashboardCard()
@@ -589,6 +527,34 @@ struct DashboardView: View {
                         .font(.headline)
                         .foregroundStyle(.primary)
                     Text("\(activeRecurringCount) active")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .dashboardCard()
+    }
+
+    // MARK: - Card 9: Loans
+
+    private var activeLoansCount: Int {
+        loans.filter(\.isActive).count
+    }
+
+    private var loansSection: some View {
+        NavigationLink {
+            LoansView()
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Loans")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text("\(activeLoansCount) active")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -640,11 +606,12 @@ private struct CategoryBreakdownView: View {
 
     var body: some View {
         List {
-            ForEach(totals, id: \.category.persistentModelID) { entry in
+            ForEach(Array(totals.enumerated()), id: \.element.category.persistentModelID) { index, entry in
                 CategoryTotalRow(
                     category: entry.category,
                     total: entry.total,
-                    share: entry.total / (totals.first?.total ?? 1)
+                    share: entry.total / (totals.first?.total ?? 1),
+                    color: DashboardView.barPalette[index % DashboardView.barPalette.count]
                 )
             }
         }
@@ -745,13 +712,14 @@ private struct CategoryTotalRow: View {
     let category: Category
     let total: Double
     let share: Double
+    let color: Color
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Image(systemName: category.icon)
-                    .foregroundStyle(.tint)
-                    .frame(width: 28)
+                Circle()
+                    .fill(color)
+                    .frame(width: 8, height: 8)
                 Text(category.name)
                 Spacer()
                 MaskableCurrencyText(amount: total)
@@ -761,7 +729,7 @@ private struct CategoryTotalRow: View {
 
             GeometryReader { geometry in
                 Capsule()
-                    .fill(.tint.opacity(0.35))
+                    .fill(color.opacity(0.35))
                     .frame(width: max(geometry.size.width * share, 4))
             }
             .frame(height: 5)

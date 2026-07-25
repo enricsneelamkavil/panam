@@ -98,6 +98,7 @@ struct AddEditRecurringPaymentView: View {
                         save()
                     }
                     .disabled(!canSave)
+                    .tint(.appPrimary)
                 }
             }
             .onAppear(perform: populateFromPayment)

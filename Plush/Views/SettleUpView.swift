@@ -102,6 +102,7 @@ struct SettleUpView: View {
             person: person
         )
         modelContext.insert(entry)
+        MoneyEventSync.sync(lendingEntry: entry, context: modelContext)
 
         if let selectedAccount {
             let directionNote = isTheyOweYou

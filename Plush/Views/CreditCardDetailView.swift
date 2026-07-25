@@ -17,10 +17,6 @@ struct CreditCardDetailView: View {
     @State private var showingAddEMISheet = false
     @State private var paymentTypeToRecord: CardPaymentType?
 
-    private static let currencyFormat = FloatingPointFormatStyle<Double>.Currency
-        .currency(code: "INR")
-        .locale(Locale(identifier: "en_IN"))
-
     /// Expense transactions on this card.
     private var cardExpenses: [Transaction] {
         allTransactions.filter { $0.account === account && $0.type == .expense }
@@ -181,7 +177,7 @@ struct CreditCardDetailView: View {
                                 .frame(width: 28)
                             Text(entry.category.name)
                             Spacer()
-                            Text(entry.total, format: Self.currencyFormat)
+                            MaskableCurrencyText(amount: entry.total)
                                 .font(.subheadline.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
@@ -240,7 +236,7 @@ struct CreditCardDetailView: View {
                 Text("Current Outstanding")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                Text(account.balance, format: Self.currencyFormat)
+                MaskableCurrencyText(amount: account.balance)
                     .font(.largeTitle.bold().monospacedDigit())
             }
 
@@ -248,7 +244,7 @@ struct CreditCardDetailView: View {
                 let utilization = max(account.balance / creditLimit, 0)
 
                 LabeledContent("Credit Limit") {
-                    Text(creditLimit, format: Self.currencyFormat)
+                    MaskableCurrencyText(amount: creditLimit)
                 }
                 .font(.subheadline)
 
@@ -294,7 +290,7 @@ private struct EMIRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Text(emi.remainingAmount, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+            MaskableCurrencyText(amount: emi.remainingAmount)
                 .font(.subheadline.monospacedDigit())
         }
     }

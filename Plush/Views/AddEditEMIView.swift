@@ -62,6 +62,7 @@ struct AddEditEMIView: View {
                         save()
                     }
                     .disabled(!canSave)
+                    .tint(.appPrimary)
                 }
             }
         }

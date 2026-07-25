@@ -133,6 +133,7 @@ struct AddLendingEntryView: View {
         modelContext.insert(transaction)
         entry.linkedTransaction = transaction
         selectedAccount.applyTransaction(amount: amount, type: kind.transactionType)
+        MoneyEventSync.sync(lendingEntry: entry, context: modelContext)
 
         dismiss()
     }

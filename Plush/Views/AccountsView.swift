@@ -99,7 +99,7 @@ private struct AccountRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Text(account.balance, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+            MaskableCurrencyText(amount: account.balance)
                 .font(.body.monospacedDigit())
         }
     }

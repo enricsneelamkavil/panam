@@ -12,6 +12,7 @@ struct PlushApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var authState = AuthState()
+    @State private var privacyState = PrivacyState()
     @State private var backgroundedAt: Date?
 
     @AppStorage(AppSettings.biometricLockEnabledKey)
@@ -50,6 +51,7 @@ struct PlushApp: App {
 
     init() {
         CategorySeeder.seedIfNeeded(sharedModelContainer.mainContext)
+        MoneyEventMigration.runOneTimeMigration(context: sharedModelContainer.mainContext)
         AutopayProcessor.processAutopays(context: sharedModelContainer.mainContext)
     }
 
@@ -66,6 +68,7 @@ struct PlushApp: App {
                         .transition(.opacity)
                 }
             }
+            .environment(privacyState)
             .onChange(of: scenePhase) { _, newPhase in
                 switch newPhase {
                 case .background:

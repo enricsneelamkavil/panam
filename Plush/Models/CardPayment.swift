@@ -42,6 +42,7 @@ extension CardPayment {
         case .billPayment: recordBillPayment(context: context)
         case .cashAdvance: recordCashAdvance(context: context)
         }
+        MoneyEventSync.sync(cardPayment: self, context: context)
     }
 
     /// Reverses and deletes both linked transactions, for use when a

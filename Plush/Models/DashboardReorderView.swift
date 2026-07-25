@@ -7,34 +7,45 @@ import SwiftUI
 
 struct DashboardReorderView: View {
     @Environment(\.dismiss) private var dismiss
-    
+
     private static let defaultSectionOrder = [
-        "summary", "upcomingDues", "netWorth", "spendBar",
-        "topCategories", "accounts", "lending", "recurring",
+        "summary", "upcomingDues", "spendBar",
+        "topCategories", "accounts", "lending", "recurring", "loans",
     ]
 
     private static let sectionNames: [String: String] = [
         "summary": "Income/Expense",
         "upcomingDues": "Upcoming Dues",
-        "netWorth": "Net Worth",
         "spendBar": "Spend Bar",
         "topCategories": "Top Categories",
         "accounts": "Accounts",
         "lending": "Lending",
         "recurring": "Recurring",
+        "loans": "Loans",
     ]
-    
+
     @AppStorage("dashboardSectionOrder") private var sectionOrderJSON = ""
-    
+
     @State private var sectionOrder: [String] = []
-    
+
     var body: some View {
         NavigationStack {
             List {
-                ForEach(sectionOrder, id: \.self) { id in
-                    Text(Self.sectionNames[id] ?? id)
+                Section {
+                    Label("Total Balance", systemImage: "lock.fill")
+                        .foregroundStyle(.secondary)
+                    Label("Credit Card Due", systemImage: "lock.fill")
+                        .foregroundStyle(.secondary)
+                } footer: {
+                    Text("These always stay pinned at the top.")
                 }
-                .onMove(perform: moveSections)
+
+                Section {
+                    ForEach(sectionOrder, id: \.self) { id in
+                        Text(Self.sectionNames[id] ?? id)
+                    }
+                    .onMove(perform: moveSections)
+                }
             }
             .environment(\.editMode, .constant(.active))
             .navigationTitle("Reorder Sections")
@@ -57,7 +68,7 @@ struct DashboardReorderView: View {
             }
         }
     }
-    
+
     private func loadSectionOrder() {
         let stored = (try? JSONDecoder().decode([String].self, from: Data(sectionOrderJSON.utf8))) ?? []
         var order = stored.filter { Self.defaultSectionOrder.contains($0) }
@@ -66,11 +77,11 @@ struct DashboardReorderView: View {
         }
         sectionOrder = order
     }
-    
+
     private func moveSections(from source: IndexSet, to destination: Int) {
         sectionOrder.move(fromOffsets: source, toOffset: destination)
     }
-    
+
     private func saveSectionOrder() {
         if let data = try? JSONEncoder().encode(sectionOrder) {
             sectionOrderJSON = String(decoding: data, as: UTF8.self)

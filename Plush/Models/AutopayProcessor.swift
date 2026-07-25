@@ -23,6 +23,7 @@ extension RecurringOccurrence {
         context.insert(transaction)
         linkedTransaction = transaction
         payment.account?.applyTransaction(amount: actualAmount, type: .expense)
+        MoneyEventSync.sync(paidRecurringOccurrence: self, context: context)
     }
 }
 

@@ -100,6 +100,7 @@ struct AddEditInvestmentView: View {
                         save()
                     }
                     .disabled(!canSave)
+                    .tint(.appPrimary)
                 }
             }
             .onAppear(perform: populateFromInvestment)

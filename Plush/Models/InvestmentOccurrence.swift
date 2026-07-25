@@ -47,5 +47,6 @@ extension InvestmentOccurrence {
         context.insert(transaction)
         linkedTransaction = transaction
         investment.account?.applyTransaction(amount: actualAmount, type: .expense)
+        MoneyEventSync.sync(contributedInvestmentOccurrence: self, context: context)
     }
 }

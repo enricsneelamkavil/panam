@@ -14,10 +14,6 @@ struct InvestmentsView: View {
     @State private var showingAddSheet = false
     @State private var investmentToEdit: Investment?
 
-    private static let currencyFormat = FloatingPointFormatStyle<Double>.Currency
-        .currency(code: "INR")
-        .locale(Locale(identifier: "en_IN"))
-
     private var totalInvested: Double {
         investments.reduce(0) { $0 + $1.amount }
     }
@@ -96,7 +92,7 @@ struct InvestmentsView: View {
                 Text("Total Invested")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                Text(totalInvested, format: Self.currencyFormat)
+                MaskableCurrencyText(amount: totalInvested)
                     .font(.largeTitle.bold().monospacedDigit())
             }
 
@@ -141,7 +137,7 @@ private struct InvestmentRow: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Text(investment.amount, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+            MaskableCurrencyText(amount: investment.amount)
                 .font(.body.monospacedDigit())
         }
     }
@@ -179,10 +175,13 @@ private struct RecurringInvestmentRow: View {
                 }
             }
             Spacer()
-            Text("\(investment.investedValue.formatted(.currency(code: "INR").locale(Locale(identifier: "en_IN")))) contributed")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.trailing)
+            HStack(spacing: 4) {
+                MaskableCurrencyText(amount: investment.investedValue)
+                Text("contributed")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.trailing)
         }
     }
 }
