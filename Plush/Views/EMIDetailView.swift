@@ -50,8 +50,14 @@ struct EMIDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $selectedInstallment) { installment in
             if installment.isPaid {
-                PaidInstallmentSummaryView(installment: installment)
-                    .presentationDetents([.medium])
+                PaymentSummaryView(
+                    title: "Installment #\(installment.installmentNumber)",
+                    dueDate: installment.dueDate,
+                    expectedAmount: installment.amount,
+                    actualAmount: installment.amount,
+                    completedDate: installment.paidDate
+                )
+                .presentationDetents([.medium])
             } else {
                 PaymentConfirmationSheet(
                     title: "Mark as Paid",
@@ -128,41 +134,6 @@ private struct InstallmentRow: View {
             }
         }
         .contentShape(Rectangle())
-    }
-}
-
-private struct PaidInstallmentSummaryView: View {
-    @Environment(\.dismiss) private var dismiss
-
-    let installment: EMIInstallment
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                LabeledContent("Installment", value: "#\(installment.installmentNumber)")
-                LabeledContent("Due Date") {
-                    Text(installment.dueDate, format: .dateTime.day().month(.abbreviated).year())
-                }
-                LabeledContent("Amount") {
-                    Text(installment.amount,
-                         format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
-                }
-                if let paidDate = installment.paidDate {
-                    LabeledContent("Paid On") {
-                        Text(paidDate, format: .dateTime.day().month(.abbreviated).year())
-                    }
-                }
-            }
-            .navigationTitle("Installment Details")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-            }
-        }
     }
 }
 

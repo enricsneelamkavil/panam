@@ -116,6 +116,9 @@ struct SettleUpView: View {
                 account: selectedAccount,
                 category: lentMoneyCategory()
             )
+            // A settlement (.repaymentReceived/.repaymentMade) cancels a debt —
+            // it's not real income/spend, so it's excluded from flow totals.
+            transaction.isLendingRepayment = true
             modelContext.insert(transaction)
             entry.linkedTransaction = transaction
             selectedAccount.applyTransaction(amount: amount, type: settlementKind.transactionType)

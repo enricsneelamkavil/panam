@@ -96,13 +96,15 @@ struct DashboardView: View {
     /// Income-like transactions, excluding refund — a refund reduces Expense instead of adding to Income.
     private var incomeTotal: Double {
         periodTransactions
-            .filter { $0.type.isIncomeLike && $0.type != .refund }
+            .filter { $0.type.isIncomeLike && $0.type != .refund && !$0.isLendingRepayment }
             .reduce(0) { $0 + $1.amount }
     }
 
     /// .expense + .taxAndFee, netted against refunds.
     private var expenseTotal: Double {
-        let spent = periodTransactions.filter { $0.type.isExpenseLike }.reduce(0) { $0 + $1.amount }
+        let spent = periodTransactions
+            .filter { $0.type.isExpenseLike && !$0.isLendingRepayment }
+            .reduce(0) { $0 + $1.amount }
         let refunded = periodTransactions.filter { $0.type == .refund }.reduce(0) { $0 + $1.amount }
         return spent - refunded
     }
@@ -162,6 +164,7 @@ struct DashboardView: View {
     // "netWorth" removed — net worth is now shown directly in the pinned balance card.
     private static let defaultSectionOrder = [
         "summary", "upcomingDues", "spendBar", "topCategories", "accounts", "lending", "recurring", "loans",
+        "monthlyReplay",
     ]
 
     @AppStorage("dashboardSectionOrder") private var sectionOrderJSON = ""
@@ -299,6 +302,7 @@ struct DashboardView: View {
         case "lending":      lendingSection
         case "recurring":    recurringSection
         case "loans":        loansSection
+        case "monthlyReplay": monthlyReplaySection
         default:             EmptyView()
         }
     }
@@ -567,6 +571,25 @@ struct DashboardView: View {
         .dashboardCard()
     }
 
+    // MARK: - Card 10: Monthly Replay
+
+    private var monthlyReplaySection: some View {
+        NavigationLink {
+            MonthlyReplayView()
+        } label: {
+            HStack {
+                Text("Monthly Replay")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .dashboardCard()
+    }
+
     // MARK: - Chat FAB
 
     private var chatButton: some View {
@@ -645,6 +668,14 @@ private struct UpcomingDuesListView: View {
                         UpcomingDueRow(occurrence: occurrence)
                     }
                     .buttonStyle(.plain)
+                }
+            }
+
+            Section {
+                NavigationLink {
+                    FutureView()
+                } label: {
+                    Text("View Full 12-Month Outlook")
                 }
             }
         }

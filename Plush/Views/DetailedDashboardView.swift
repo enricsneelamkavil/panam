@@ -170,7 +170,7 @@ struct DetailedDashboardView: View {
         var totals: [Date: (income: Double, expense: Double)] = [:]
         for transaction in rangeTransactions {
             // Transfers and adjustments have no net flow — excluded entirely.
-            guard !transaction.type.isExcludedFromFlow else { continue }
+            guard !transaction.isExcludedFromFlow else { continue }
 
             let key = bucketStart(for: transaction.date)
             var entry = totals[key] ?? (0, 0)
@@ -318,7 +318,9 @@ struct DetailedDashboardView: View {
     /// .expense + .taxAndFee within the current month, netted against refunds.
     private var monthlyBurn: Double {
         let monthTransactions = transactions.filter { currentMonthInterval.contains($0.date) }
-        let spent = monthTransactions.filter { $0.type.isExpenseLike }.reduce(0) { $0 + $1.amount }
+        let spent = monthTransactions
+            .filter { $0.type.isExpenseLike && !$0.isLendingRepayment }
+            .reduce(0) { $0 + $1.amount }
         let refunded = monthTransactions.filter { $0.type == .refund }.reduce(0) { $0 + $1.amount }
         return spent - refunded
     }
@@ -327,7 +329,10 @@ struct DetailedDashboardView: View {
     /// (a refund reduces monthlyBurn instead of adding to income).
     private var monthlyIncome: Double {
         transactions
-            .filter { $0.type.isIncomeLike && $0.type != .refund && currentMonthInterval.contains($0.date) }
+            .filter {
+                $0.type.isIncomeLike && $0.type != .refund && !$0.isLendingRepayment
+                    && currentMonthInterval.contains($0.date)
+            }
             .reduce(0) { $0 + $1.amount }
     }
 
@@ -370,7 +375,9 @@ struct DetailedDashboardView: View {
                   let monthInterval = calendar.dateInterval(of: .month, for: monthDate)
             else { continue }
             let monthTransactions = transactions.filter { monthInterval.contains($0.date) }
-            let spent = monthTransactions.filter { $0.type.isExpenseLike }.reduce(0) { $0 + $1.amount }
+            let spent = monthTransactions
+                .filter { $0.type.isExpenseLike && !$0.isLendingRepayment }
+                .reduce(0) { $0 + $1.amount }
             let refunded = monthTransactions.filter { $0.type == .refund }.reduce(0) { $0 + $1.amount }
             total += spent - refunded
             monthsCounted += 1

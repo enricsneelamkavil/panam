@@ -100,17 +100,7 @@ private struct AddEditCategoryView: View {
 
     @State private var name = ""
     @State private var icon = "circle.fill"
-
-    private static let iconOptions = [
-        "circle.fill", "fork.knife", "cup.and.saucer.fill", "cart.fill",
-        "bag.fill", "bolt.fill", "house.fill", "car.fill",
-        "fuelpump.fill", "cross.case.fill", "pills.fill", "gift.fill",
-        "airplane", "tram.fill", "film.fill", "gamecontroller.fill",
-        "book.fill", "graduationcap.fill", "pawprint.fill", "phone.fill",
-        "wifi", "creditcard.fill", "banknote", "chart.line.uptrend.xyaxis",
-        "person.2.fill", "tshirt.fill", "scissors", "dumbbell.fill",
-        "heart.fill", "leaf.fill", "star.fill", "wrench.and.screwdriver.fill",
-    ]
+    @State private var showingIconPicker = false
 
     private var isEditing: Bool { category != nil }
 
@@ -131,23 +121,26 @@ private struct AddEditCategoryView: View {
                 }
 
                 Section("Icon") {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 12) {
-                        ForEach(Self.iconOptions, id: \.self) { option in
-                            Button {
-                                icon = option
-                            } label: {
-                                Image(systemName: option)
-                                    .frame(width: 36, height: 36)
-                                    .background(
-                                        icon == option ? Color.accentColor.opacity(0.2) : .clear,
-                                        in: RoundedRectangle(cornerRadius: 8)
-                                    )
-                                    .foregroundStyle(icon == option ? Color.accentColor : .secondary)
-                            }
-                            .buttonStyle(.plain)
+                    Button {
+                        showingIconPicker = true
+                    } label: {
+                        HStack {
+                            Image(systemName: icon)
+                                .frame(width: 36, height: 36)
+                                .background(
+                                    Color.accentColor.opacity(0.2),
+                                    in: RoundedRectangle(cornerRadius: 8)
+                                )
+                                .foregroundStyle(Color.accentColor)
+                            Text("Choose Icon")
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
                         }
                     }
-                    .padding(.vertical, 4)
+                    .buttonStyle(.plain)
                 }
             }
             .navigationTitle(isEditing ? "Edit Category" : "New Category")
@@ -164,6 +157,9 @@ private struct AddEditCategoryView: View {
                     }
                     .disabled(!canSave)
                 }
+            }
+            .sheet(isPresented: $showingIconPicker) {
+                IconPickerView(selectedIcon: $icon)
             }
             .onAppear {
                 guard let category else { return }

@@ -12,6 +12,7 @@ struct CreditCardDetailView: View {
 
     @Query(sort: \Transaction.date, order: .reverse) private var allTransactions: [Transaction]
     @Query private var allEMIs: [CreditCardEMI]
+    @Query private var allCardPayments: [CardPayment]
 
     @State private var showingEditSheet = false
     @State private var showingAddEMISheet = false
@@ -20,6 +21,47 @@ struct CreditCardDetailView: View {
     /// Expense transactions on this card.
     private var cardExpenses: [Transaction] {
         allTransactions.filter { $0.account === account && $0.type == .expense }
+    }
+
+    /// Transactions that are legs of a bill payment or cash advance, not real purchases.
+    private var cardPaymentTransactionIDs: Set<PersistentIdentifier> {
+        var ids = Set<PersistentIdentifier>()
+        for payment in allCardPayments where payment.card === account || payment.sourceAccount === account {
+            if let tx = payment.cardTransaction { ids.insert(tx.persistentModelID) }
+            if let tx = payment.sourceTransaction { ids.insert(tx.persistentModelID) }
+        }
+        return ids
+    }
+
+    /// The current fee-year window: feeYearStartDate rolled forward by full
+    /// years until it contains today.
+    private var feeYearWindow: DateInterval? {
+        guard let start = account.feeYearStartDate else { return nil }
+        let calendar = Calendar.current
+        var windowStart = calendar.startOfDay(for: start)
+        let now = Date.now
+        while true {
+            guard let windowEnd = calendar.date(byAdding: .year, value: 1, to: windowStart) else { return nil }
+            if now < windowEnd {
+                return DateInterval(start: windowStart, end: windowEnd)
+            }
+            windowStart = windowEnd
+        }
+    }
+
+    /// Purchase-only spend on this card within the current fee-year window.
+    private var feeYearSpend: Double {
+        guard let window = feeYearWindow else { return 0 }
+        return cardExpenses
+            .filter { window.contains($0.date) && !cardPaymentTransactionIDs.contains($0.persistentModelID) }
+            .reduce(0) { $0 + $1.amount }
+    }
+
+    private var feeYearDaysLeft: Int? {
+        guard let window = feeYearWindow else { return nil }
+        return Calendar.current.dateComponents(
+            [.day], from: Calendar.current.startOfDay(for: .now), to: window.end
+        ).day
     }
 
     /// This card's active EMIs.
@@ -122,6 +164,12 @@ struct CreditCardDetailView: View {
         List {
             Section {
                 headerCard
+            }
+
+            if account.annualFeeAmount != nil && account.feeWaiverSpendTarget != nil {
+                Section("Fee Waiver Progress") {
+                    feeWaiverCard
+                }
             }
 
             if outstandingDueDate != nil || nextStatementDate != nil {
@@ -265,6 +313,59 @@ struct CreditCardDetailView: View {
                         .foregroundStyle(utilizationColor(utilization))
                 }
             }
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// Caller only renders this when `account.feeWaiverSpendTarget` is set.
+    private var feeWaiverTarget: Double { account.feeWaiverSpendTarget ?? 0 }
+    private var feeWaiverProgress: Double {
+        guard feeWaiverTarget > 0 else { return 0 }
+        return min(feeYearSpend / feeWaiverTarget, 1.0)
+    }
+    private var feeWaiverRemaining: Double {
+        max(feeWaiverTarget - feeYearSpend, 0)
+    }
+
+    private var feeWaiverCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Spend Toward Waiver")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                MaskableCurrencyText(amount: feeYearSpend)
+                    .font(.subheadline.monospacedDigit())
+                Text("/ \(feeWaiverTarget.formatted(.currency(code: "INR").locale(Locale(identifier: "en_IN"))))")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(.quaternary)
+                    Capsule()
+                        .fill(feeWaiverProgress >= 1 ? Color.green : Color.appPrimary)
+                        .frame(width: geometry.size.width * feeWaiverProgress)
+                }
+            }
+            .frame(height: 8)
+
+            HStack {
+                if feeWaiverRemaining > 0 {
+                    Text("\(feeWaiverRemaining.formatted(.currency(code: "INR").locale(Locale(identifier: "en_IN")))) more to waive the annual fee")
+                } else {
+                    Text("Annual fee waived ✓")
+                        .foregroundStyle(.green)
+                }
+                Spacer()
+                if let daysLeft = feeYearDaysLeft {
+                    Text("\(max(daysLeft, 0)) day\(daysLeft == 1 ? "" : "s") left")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
     }

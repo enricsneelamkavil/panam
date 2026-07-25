@@ -91,8 +91,16 @@ struct InvestmentDetailView: View {
         }
         .sheet(item: $selectedOccurrence) { occurrence in
             if occurrence.isContributed {
-                ContributedSummaryView(occurrence: occurrence)
-                    .presentationDetents([.medium])
+                PaymentSummaryView(
+                    title: "Contribution Details",
+                    dueDate: occurrence.dueDate,
+                    expectedAmount: occurrence.expectedAmount,
+                    actualAmount: occurrence.actualAmount,
+                    completedDate: occurrence.contributedDate,
+                    amountLabel: "Contributed",
+                    dateLabel: "Contributed On"
+                )
+                .presentationDetents([.medium])
             } else {
                 MarkContributedView(occurrence: occurrence)
                     .presentationDetents([.medium])
@@ -201,48 +209,6 @@ private struct MarkContributedView: View {
         guard let actualAmount, actualAmount > 0 else { return }
         occurrence.markContributed(actualAmount: actualAmount, context: modelContext)
         dismiss()
-    }
-}
-
-/// Read-only summary for an occurrence that has already been contributed.
-private struct ContributedSummaryView: View {
-    @Environment(\.dismiss) private var dismiss
-
-    let occurrence: InvestmentOccurrence
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                LabeledContent("Due Date") {
-                    Text(occurrence.dueDate, format: .dateTime.day().month(.abbreviated).year())
-                }
-                LabeledContent("Expected") {
-                    Text(occurrence.expectedAmount,
-                         format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
-                }
-                if let actualAmount = occurrence.actualAmount {
-                    LabeledContent("Contributed") {
-                        Text(actualAmount,
-                             format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
-                            .foregroundStyle(.green)
-                    }
-                }
-                if let contributedDate = occurrence.contributedDate {
-                    LabeledContent("Contributed On") {
-                        Text(contributedDate, format: .dateTime.day().month(.abbreviated).year())
-                    }
-                }
-            }
-            .navigationTitle("Contribution Details")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-            }
-        }
     }
 }
 

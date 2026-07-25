@@ -17,6 +17,9 @@ final class Transaction {
     var isSplit: Bool = false
     /// The user's own share when `isSplit == true`. `amount` always holds the full total paid.
     var myPortionAmount: Double?
+    /// True for the Transaction leg of a lending settlement (.repaymentReceived/.repaymentMade) —
+    /// a debt settling, not real income/spend. Not set for .lent/.borrowed, which are real money movements.
+    var isLendingRepayment: Bool = false
 
     @Relationship(deleteRule: .cascade, inverse: \SplitAllocation.transaction)
     var splitAllocations: [SplitAllocation] = []
@@ -37,6 +40,13 @@ extension Transaction {
     /// For split transactions this is the user's own share; otherwise the full amount.
     nonisolated var effectiveAmount: Double {
         isSplit ? (myPortionAmount ?? amount) : amount
+    }
+
+    /// True for types that should not appear in Income or Expense aggregations —
+    /// the type-level exclusions (transfers, adjustments) plus lending repayments,
+    /// which settle a debt rather than representing real income/spend.
+    nonisolated var isExcludedFromFlow: Bool {
+        type.isExcludedFromFlow || isLendingRepayment
     }
 }
 

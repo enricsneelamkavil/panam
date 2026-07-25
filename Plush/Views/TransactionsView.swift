@@ -116,6 +116,13 @@ struct TransactionsView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink {
+                        MerchantsView()
+                    } label: {
+                        Label("Merchants", systemImage: "storefront")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
                         CategoriesView()
                     } label: {
                         Label("Manage Categories", systemImage: "tag")
@@ -373,6 +380,13 @@ private struct MoneyEventDetailSheet: View {
 struct TransactionRow: View {
     let transaction: Transaction
 
+    @Query private var lendingEntries: [LendingEntry]
+
+    private var linkedLendingEntry: LendingEntry? {
+        guard transaction.isLendingRepayment else { return nil }
+        return lendingEntries.first { $0.linkedTransaction === transaction }
+    }
+
     var body: some View {
         if transaction.type.isTransferLike {
             transferRow
@@ -407,13 +421,18 @@ struct TransactionRow: View {
 
     private var standardRow: some View {
         HStack {
-            Image(systemName: transaction.category?.icon ?? "circle.fill")
-                .foregroundStyle(.tint)
+            Image(systemName: transaction.isLendingRepayment ? "arrow.triangle.2.circlepath" : (transaction.category?.icon ?? "circle.fill"))
+                .foregroundStyle(transaction.isLendingRepayment ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
                 .frame(width: 28)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(transaction.category?.name ?? "Uncategorized")
-                    .font(.body)
+                if transaction.isLendingRepayment {
+                    Text(linkedLendingEntry?.person.map { "Loan Repayment · \($0.name)" } ?? "Loan Repayment")
+                        .font(.body)
+                } else {
+                    Text(transaction.category?.name ?? "Uncategorized")
+                        .font(.body)
+                }
                 if transaction.isSplit {
                     if let portion = transaction.myPortionAmount {
                         Text("Split · Your portion \(portion.formatted(.currency(code: "INR").locale(Locale(identifier: "en_IN"))))")
@@ -446,7 +465,11 @@ struct TransactionRow: View {
 
             MaskableCurrencyText(amount: transaction.amount)
                 .font(.body.monospacedDigit())
-                .foregroundStyle(transaction.type.isIncomeLike ? .green : .red)
+                .foregroundStyle(
+                    transaction.isLendingRepayment
+                        ? AnyShapeStyle(.secondary)
+                        : AnyShapeStyle(transaction.type.isIncomeLike ? Color.green : Color.red)
+                )
         }
     }
 }

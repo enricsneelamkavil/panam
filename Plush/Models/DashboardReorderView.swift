@@ -10,7 +10,7 @@ struct DashboardReorderView: View {
 
     private static let defaultSectionOrder = [
         "summary", "upcomingDues", "spendBar",
-        "topCategories", "accounts", "lending", "recurring", "loans",
+        "topCategories", "accounts", "lending", "recurring", "loans", "monthlyReplay",
     ]
 
     private static let sectionNames: [String: String] = [
@@ -22,6 +22,7 @@ struct DashboardReorderView: View {
         "lending": "Lending",
         "recurring": "Recurring",
         "loans": "Loans",
+        "monthlyReplay": "Monthly Replay",
     ]
 
     @AppStorage("dashboardSectionOrder") private var sectionOrderJSON = ""

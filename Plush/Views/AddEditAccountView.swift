@@ -20,6 +20,9 @@ struct AddEditAccountView: View {
     @State private var creditLimit: Double?
     @State private var statementDay: Int?
     @State private var dueDay: Int?
+    @State private var annualFeeAmount: Double?
+    @State private var feeWaiverSpendTarget: Double?
+    @State private var feeYearStartDate: Date = .now
 
     private var isEditing: Bool { account != nil }
 
@@ -77,6 +80,20 @@ struct AddEditAccountView: View {
                         TextField("Due Day (1–31)", value: $dueDay, format: .number)
                             .keyboardType(.numberPad)
                     }
+
+                    Section {
+                        TextField("Annual Fee Amount", value: $annualFeeAmount, format: .number)
+                            .keyboardType(.decimalPad)
+
+                        TextField("Spend Target to Waive It", value: $feeWaiverSpendTarget, format: .number)
+                            .keyboardType(.decimalPad)
+
+                        DatePicker("Fee Year Start Date", selection: $feeYearStartDate, displayedComponents: .date)
+                    } header: {
+                        Text("Annual Fee")
+                    } footer: {
+                        Text("All optional. Fee year start defaults to today if left as-is.")
+                    }
                 }
             }
             .navigationTitle(isEditing ? "Edit Account" : "New Account")
@@ -107,6 +124,9 @@ struct AddEditAccountView: View {
         creditLimit = account.creditLimit
         statementDay = account.statementDay
         dueDay = account.dueDay
+        annualFeeAmount = account.annualFeeAmount
+        feeWaiverSpendTarget = account.feeWaiverSpendTarget
+        feeYearStartDate = account.feeYearStartDate ?? .now
     }
 
     private func save() {
@@ -120,6 +140,11 @@ struct AddEditAccountView: View {
         let clampedDueDay = type == .creditCard ? dueDay.map { min(max($0, 1), 31) } : nil
         let limit = type == .creditCard ? creditLimit : nil
 
+        let resolvedAnnualFee = type == .creditCard ? annualFeeAmount : nil
+        let resolvedFeeTarget = type == .creditCard ? feeWaiverSpendTarget : nil
+        let resolvedFeeYearStart: Date? = (resolvedAnnualFee != nil || resolvedFeeTarget != nil)
+            ? feeYearStartDate : nil
+
         if let account {
             account.name = trimmedName
             account.type = type
@@ -127,6 +152,9 @@ struct AddEditAccountView: View {
             account.creditLimit = limit
             account.statementDay = clampedStatementDay
             account.dueDay = clampedDueDay
+            account.annualFeeAmount = resolvedAnnualFee
+            account.feeWaiverSpendTarget = resolvedFeeTarget
+            account.feeYearStartDate = resolvedFeeYearStart
         } else {
             let newAccount = Account(
                 name: trimmedName,
@@ -136,6 +164,9 @@ struct AddEditAccountView: View {
                 statementDay: clampedStatementDay,
                 dueDay: clampedDueDay
             )
+            newAccount.annualFeeAmount = resolvedAnnualFee
+            newAccount.feeWaiverSpendTarget = resolvedFeeTarget
+            newAccount.feeYearStartDate = resolvedFeeYearStart
             modelContext.insert(newAccount)
         }
         dismiss()

@@ -73,8 +73,14 @@ struct RecurringDetailView: View {
         }
         .sheet(item: $selectedOccurrence) { occurrence in
             if occurrence.isPaid {
-                PaidOccurrenceSummaryView(occurrence: occurrence)
-                    .presentationDetents([.medium])
+                PaymentSummaryView(
+                    title: "Payment Details",
+                    dueDate: occurrence.dueDate,
+                    expectedAmount: occurrence.expectedAmount,
+                    actualAmount: occurrence.actualAmount,
+                    completedDate: occurrence.paidDate
+                )
+                .presentationDetents([.medium])
             } else {
                 PaymentConfirmationSheet(
                     title: "Mark as Paid",
@@ -135,48 +141,6 @@ private struct OccurrenceRow: View {
             }
         }
         .contentShape(Rectangle())
-    }
-}
-
-/// Read-only summary for an occurrence that has already been paid.
-private struct PaidOccurrenceSummaryView: View {
-    @Environment(\.dismiss) private var dismiss
-
-    let occurrence: RecurringOccurrence
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                LabeledContent("Due Date") {
-                    Text(occurrence.dueDate, format: .dateTime.day().month(.abbreviated).year())
-                }
-                LabeledContent("Expected") {
-                    Text(occurrence.expectedAmount,
-                         format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
-                }
-                if let actualAmount = occurrence.actualAmount {
-                    LabeledContent("Paid") {
-                        Text(actualAmount,
-                             format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
-                            .foregroundStyle(.green)
-                    }
-                }
-                if let paidDate = occurrence.paidDate {
-                    LabeledContent("Paid On") {
-                        Text(paidDate, format: .dateTime.day().month(.abbreviated).year())
-                    }
-                }
-            }
-            .navigationTitle("Payment Details")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-            }
-        }
     }
 }
 

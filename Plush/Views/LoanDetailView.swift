@@ -48,8 +48,14 @@ struct LoanDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $selectedInstallment) { installment in
             if installment.isPaid {
-                PaidLoanInstallmentSummaryView(installment: installment)
-                    .presentationDetents([.medium])
+                PaymentSummaryView(
+                    title: "Installment #\(installment.installmentNumber)",
+                    dueDate: installment.dueDate,
+                    expectedAmount: installment.amount,
+                    actualAmount: installment.amount,
+                    completedDate: installment.paidDate
+                )
+                .presentationDetents([.medium])
             } else {
                 PaymentConfirmationSheet(
                     title: "Mark as Paid",
@@ -134,37 +140,3 @@ private struct LoanInstallmentRow: View {
     }
 }
 
-private struct PaidLoanInstallmentSummaryView: View {
-    @Environment(\.dismiss) private var dismiss
-
-    let installment: LoanInstallment
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                LabeledContent("Installment", value: "#\(installment.installmentNumber)")
-                LabeledContent("Due Date") {
-                    Text(installment.dueDate, format: .dateTime.day().month(.abbreviated).year())
-                }
-                LabeledContent("Amount") {
-                    Text(installment.amount, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
-                }
-                if let paidDate = installment.paidDate {
-                    LabeledContent("Paid On") {
-                        Text(paidDate, format: .dateTime.day().month(.abbreviated).year())
-                    }
-                }
-                if let tx = installment.linkedTransaction, let acct = tx.account {
-                    LabeledContent("Debited From", value: acct.name)
-                }
-            }
-            .navigationTitle("Paid Installment")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-    }
-}
