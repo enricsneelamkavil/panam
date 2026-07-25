@@ -12,6 +12,7 @@ struct PersonDetailView: View {
     let person: Person
 
     @State private var showingAddSheet = false
+    @State private var showingSettleUp = false
 
     private static let currencyFormat = FloatingPointFormatStyle<Double>.Currency
         .currency(code: "INR")
@@ -35,6 +36,17 @@ struct PersonDetailView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)
+
+                if balance != 0 {
+                    Button {
+                        showingSettleUp = true
+                    } label: {
+                        Text("Settle Up")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.appPrimary)
+                }
             }
 
             Section("History") {
@@ -57,6 +69,9 @@ struct PersonDetailView: View {
         }
         .sheet(isPresented: $showingAddSheet) {
             AddLendingEntryView(person: person)
+        }
+        .sheet(isPresented: $showingSettleUp) {
+            SettleUpView(person: person)
         }
     }
 

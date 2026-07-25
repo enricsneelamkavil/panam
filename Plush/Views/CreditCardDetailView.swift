@@ -11,8 +11,11 @@ struct CreditCardDetailView: View {
     let account: Account
 
     @Query(sort: \Transaction.date, order: .reverse) private var allTransactions: [Transaction]
+    @Query private var allEMIs: [CreditCardEMI]
 
     @State private var showingEditSheet = false
+    @State private var showingAddEMISheet = false
+    @State private var paymentTypeToRecord: CardPaymentType?
 
     private static let currencyFormat = FloatingPointFormatStyle<Double>.Currency
         .currency(code: "INR")
@@ -21,6 +24,11 @@ struct CreditCardDetailView: View {
     /// Expense transactions on this card.
     private var cardExpenses: [Transaction] {
         allTransactions.filter { $0.account === account && $0.type == .expense }
+    }
+
+    /// This card's active EMIs.
+    private var cardEMIs: [CreditCardEMI] {
+        allEMIs.filter { $0.account === account && $0.isActive }
     }
 
     /// Next occurrence of the given day of month (today counts if it matches).
@@ -37,26 +45,52 @@ struct CreditCardDetailView: View {
         )
     }
 
+    /// The due date paired with a given statement date: if the due day falls
+    /// earlier in the month than the statement day, the bill is due the
+    /// month after the statement's month; otherwise it's due that same month.
+    private func dueDate(afterStatement statementDate: Date, statementDay: Int, dueDay: Int) -> Date? {
+        let calendar = Calendar.current
+        var components = calendar.dateComponents([.year, .month], from: statementDate)
+        components.day = dueDay
+        if dueDay < statementDay {
+            components.month = (components.month ?? 1) + 1
+        }
+        return calendar.date(from: components)
+    }
+
     private var nextStatementDate: Date? {
         account.statementDay.flatMap(upcomingDate)
     }
 
-    private var nextDueDate: Date? {
-        account.dueDay.flatMap(upcomingDate)
+    /// Start of the current (most recently closed) statement period.
+    private var previousStatementDate: Date? {
+        guard let statementDay = account.statementDay, let next = nextStatementDate else { return nil }
+        return Calendar.current.nextDate(
+            after: next,
+            matching: DateComponents(day: statementDay),
+            matchingPolicy: .nextTime,
+            direction: .backward
+        )
+    }
+
+    /// The bill currently owed: due date paired with the current statement period.
+    private var outstandingDueDate: Date? {
+        guard let statementDay = account.statementDay,
+              let dueDay = account.dueDay,
+              let previousStatementDate
+        else { return nil }
+        return dueDate(afterStatement: previousStatementDate, statementDay: statementDay, dueDay: dueDay)
+    }
+
+    private var isOutstandingOverdue: Bool {
+        guard let outstandingDueDate else { return false }
+        return outstandingDueDate < Calendar.current.startOfDay(for: .now)
     }
 
     /// Current statement period: previous statement date up to the next one.
     private var statementPeriod: ClosedRange<Date>? {
-        guard let statementDay = account.statementDay,
-              let next = nextStatementDate,
-              let previous = Calendar.current.nextDate(
-                after: next,
-                matching: DateComponents(day: statementDay),
-                matchingPolicy: .nextTime,
-                direction: .backward
-              )
-        else { return nil }
-        return previous...next
+        guard let previousStatementDate, let nextStatementDate else { return nil }
+        return previousStatementDate...nextStatementDate
     }
 
     /// This statement period's expenses summed per category, largest first.
@@ -94,18 +128,47 @@ struct CreditCardDetailView: View {
                 headerCard
             }
 
-            if nextStatementDate != nil || nextDueDate != nil {
+            if outstandingDueDate != nil || nextStatementDate != nil {
                 Section("Upcoming") {
+                    if let outstandingDueDate {
+                        LabeledContent("Payment Due") {
+                            Text(outstandingDueDate, format: .dateTime.day().month(.abbreviated).year())
+                                .foregroundStyle(isOutstandingOverdue ? .red : .primary)
+                        }
+                    }
                     if let nextStatementDate {
                         LabeledContent("Next Statement") {
                             Text(nextStatementDate, format: .dateTime.day().month(.abbreviated).year())
+                                .foregroundStyle(.secondary)
                         }
                     }
-                    if let nextDueDate {
-                        LabeledContent("Payment Due") {
-                            Text(nextDueDate, format: .dateTime.day().month(.abbreviated).year())
+                }
+            }
+
+            Section {
+                if cardEMIs.isEmpty {
+                    Text("No EMIs on this card.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(cardEMIs) { emi in
+                        NavigationLink {
+                            EMIDetailView(emi: emi)
+                        } label: {
+                            EMIRow(emi: emi)
                         }
                     }
+                }
+            } header: {
+                HStack {
+                    Text("EMIs")
+                    Spacer()
+                    Button {
+                        showingAddEMISheet = true
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                    }
+                    .buttonStyle(.plain)
                 }
             }
 
@@ -147,6 +210,14 @@ struct CreditCardDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button("Bill Payment") { paymentTypeToRecord = .billPayment }
+                    Button("Cash Advance") { paymentTypeToRecord = .cashAdvance }
+                } label: {
+                    Label("Record Payment", systemImage: "creditcard.and.123")
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button("Edit") {
                     showingEditSheet = true
                 }
@@ -154,6 +225,12 @@ struct CreditCardDetailView: View {
         }
         .sheet(isPresented: $showingEditSheet) {
             AddEditAccountView(account: account)
+        }
+        .sheet(isPresented: $showingAddEMISheet) {
+            AddEditEMIView(account: account)
+        }
+        .sheet(item: $paymentTypeToRecord) { type in
+            AddCardPaymentView(type: type, card: account)
         }
     }
 
@@ -205,6 +282,24 @@ struct CreditCardDetailView: View {
     }
 }
 
+private struct EMIRow: View {
+    let emi: CreditCardEMI
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(emi.name)
+                Text("\(emi.paidCount) of \(emi.tenureMonths) paid")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(emi.remainingAmount, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+                .font(.subheadline.monospacedDigit())
+        }
+    }
+}
+
 #Preview {
     NavigationStack {
         CreditCardDetailView(
@@ -212,5 +307,9 @@ struct CreditCardDetailView: View {
                              creditLimit: 100_000, statementDay: 5, dueDay: 25)
         )
     }
-    .modelContainer(for: [Account.self, Category.self, Transaction.self], inMemory: true)
+    .modelContainer(
+        for: [Account.self, Category.self, Transaction.self,
+              CreditCardEMI.self, EMIInstallment.self, CardPayment.self],
+        inMemory: true
+    )
 }

@@ -26,17 +26,22 @@ struct AddEditTransactionView: View {
 
     @State private var type: TransactionType = .expense
     @State private var amount: Double?
+    @State private var adjustmentIsPositive = true
     @State private var selectedAccount: Account?
     @State private var toAccount: Account?
     @State private var selectedCategory: Category?
     @State private var date: Date = .now
     @State private var note = ""
+    @State private var merchantName = ""
     @State private var paymentMethod: PaymentMethod?
     @State private var upiApp = ""
     @State private var showingVoiceEntry = false
     @State private var isSplit = false
     @State private var myPortion: Double?
     @State private var splitRows: [SplitRow] = [SplitRow()]
+
+    /// Types that carry a merchant name.
+    private static let merchantEligibleTypes: Set<TransactionType> = [.expense, .refund, .taxAndFee]
 
     private static let inrFormat = FloatingPointFormatStyle<Double>.Currency
         .currency(code: "INR")
@@ -52,7 +57,7 @@ struct AddEditTransactionView: View {
     /// Accounts compatible with the selected payment method.
     /// Transfers have no restriction — all accounts are valid on either side.
     private var filteredAccounts: [Account] {
-        guard type != .selfTransfer else { return accounts }
+        guard !type.isTransferLike else { return accounts }
         switch paymentMethod {
         case .cash:
             return accounts.filter { $0.type == .cash }
@@ -77,11 +82,22 @@ struct AddEditTransactionView: View {
 
     private var canSave: Bool {
         guard let amount, amount > 0 else { return false }
-        if type == .selfTransfer {
+        if type.isTransferLike {
             guard let from = selectedAccount, let to = toAccount else { return false }
             return from.persistentModelID != to.persistentModelID
         }
+        if type == .adjustment {
+            return selectedAccount != nil && !note.trimmingCharacters(in: .whitespaces).isEmpty
+        }
         return selectedAccount != nil && selectedCategory != nil
+    }
+
+    /// The signed amount actually applied to the account/stored on the transaction.
+    /// Only .adjustment carries a sign; every other type stores a positive magnitude.
+    private var signedAmount: Double? {
+        guard let amount else { return nil }
+        guard type == .adjustment else { return amount }
+        return adjustmentIsPositive ? amount : -amount
     }
 
     var body: some View {
@@ -103,17 +119,28 @@ struct AddEditTransactionView: View {
 
                 Section {
                     Picker("Type", selection: $type) {
-                        Text("Expense").tag(TransactionType.expense)
-                        Text("Income").tag(TransactionType.income)
-                        Text("Transfer").tag(TransactionType.selfTransfer)
+                        ForEach(TransactionType.allCases, id: \.self) { transactionType in
+                            Text(transactionType.displayName).tag(transactionType)
+                        }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
 
-                    TextField("Amount", value: $amount, format: .number)
-                        .keyboardType(.decimalPad)
+                    HStack {
+                        TextField("Amount", value: $amount, format: .number)
+                            .keyboardType(.decimalPad)
+
+                        if type == .adjustment {
+                            Picker("Sign", selection: $adjustmentIsPositive) {
+                                Text("+").tag(true)
+                                Text("−").tag(false)
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 90)
+                        }
+                    }
                 }
 
-                if type != .selfTransfer {
+                if !type.isTransferLike && type != .adjustment {
                     Section {
                         Picker("Payment Method", selection: $paymentMethod) {
                             Text("Not set").tag(nil as PaymentMethod?)
@@ -129,7 +156,7 @@ struct AddEditTransactionView: View {
                 }
 
                 Section {
-                    if type == .selfTransfer {
+                    if type.isTransferLike {
                         Picker("From", selection: $selectedAccount) {
                             Text("Select Account").tag(nil as Account?)
                             ForEach(accounts) { account in
@@ -165,12 +192,18 @@ struct AddEditTransactionView: View {
                             }
                         }
 
-                        Picker("Category", selection: $selectedCategory) {
-                            Text("Select Category").tag(nil as Category?)
-                            ForEach(categories) { category in
-                                Label(category.name, systemImage: category.icon)
-                                    .tag(category as Category?)
+                        if type != .adjustment {
+                            Picker("Category", selection: $selectedCategory) {
+                                Text("Select Category").tag(nil as Category?)
+                                ForEach(categories) { category in
+                                    Label(category.name, systemImage: category.icon)
+                                        .tag(category as Category?)
+                                }
                             }
+                        }
+
+                        if Self.merchantEligibleTypes.contains(type) {
+                            TextField("Merchant", text: $merchantName)
                         }
                     }
                 }
@@ -227,16 +260,22 @@ struct AddEditTransactionView: View {
 
                 Section {
                     DatePicker("Date", selection: $date, displayedComponents: [.date])
-                    TextField("Note (optional)", text: $note)
+                    TextField(type == .adjustment ? "Note (required)" : "Note (optional)", text: $note)
                 }
             }
             .onChange(of: type) { _, newType in
-                if newType != .selfTransfer {
-                    toAccount = nil
-                } else {
+                if newType.isTransferLike {
                     paymentMethod = nil
                     upiApp = ""
                     selectedCategory = nil
+                } else {
+                    toAccount = nil
+                }
+                if newType == .adjustment {
+                    paymentMethod = nil
+                    upiApp = ""
+                    selectedCategory = nil
+                    merchantName = ""
                 }
                 if newType != .expense {
                     isSplit = false
@@ -251,7 +290,7 @@ struct AddEditTransactionView: View {
                 }
             }
             .onChange(of: paymentMethod) {
-                guard type != .selfTransfer else { return }
+                guard !type.isTransferLike else { return }
                 if paymentMethod != .upi {
                     upiApp = ""
                 }
@@ -319,26 +358,32 @@ struct AddEditTransactionView: View {
     private func populateFromTransaction() {
         guard let transaction else { return }
         type = transaction.type
-        amount = transaction.amount
+        if transaction.type == .adjustment {
+            amount = abs(transaction.amount)
+            adjustmentIsPositive = transaction.amount >= 0
+        } else {
+            amount = transaction.amount
+        }
         selectedAccount = transaction.account
         selectedCategory = transaction.category
         date = transaction.date
         note = transaction.note
+        merchantName = transaction.merchantName ?? ""
         paymentMethod = transaction.paymentMethod
         upiApp = transaction.upiApp ?? ""
-        if transaction.type == .selfTransfer {
+        if transaction.type.isTransferLike {
             toAccount = transaction.toAccount
         }
         // Split configuration is creation-only; not editable after creation.
     }
 
     private func save() {
-        guard let amount, amount > 0, let selectedAccount else { return }
+        guard let amount, amount > 0, let selectedAccount, let signedAmount else { return }
         let normalizedDate = Calendar.current.startOfDay(for: date)
 
         if let transaction {
             // Reverse the old transaction effect before applying new values.
-            if transaction.type == .selfTransfer {
+            if transaction.type.isTransferLike {
                 transaction.account?.reverseTransfer(
                     amount: transaction.amount,
                     to: transaction.toAccount
@@ -350,44 +395,57 @@ struct AddEditTransactionView: View {
                 )
             }
 
-            transaction.amount = amount
+            transaction.amount = signedAmount
             transaction.type = type
             transaction.account = selectedAccount
             transaction.date = normalizedDate
             transaction.note = note
 
-            if type == .selfTransfer {
+            if type.isTransferLike {
                 transaction.toAccount = toAccount
                 transaction.category = nil
                 transaction.paymentMethod = nil
                 transaction.upiApp = nil
-                selectedAccount.applyTransfer(amount: amount, to: toAccount!)
+                transaction.merchantName = nil
+                selectedAccount.applyTransfer(amount: signedAmount, to: toAccount!)
+            } else if type == .adjustment {
+                transaction.toAccount = nil
+                transaction.category = nil
+                transaction.paymentMethod = nil
+                transaction.upiApp = nil
+                transaction.merchantName = nil
+                selectedAccount.applyTransaction(amount: signedAmount, type: type)
             } else {
                 transaction.toAccount = nil
                 transaction.category = selectedCategory
                 let trimmedUPIApp = upiApp.trimmingCharacters(in: .whitespaces)
                 transaction.paymentMethod = paymentMethod
                 transaction.upiApp = paymentMethod == .upi && !trimmedUPIApp.isEmpty ? trimmedUPIApp : nil
-                selectedAccount.applyTransaction(amount: amount, type: type)
+                transaction.merchantName = merchantNameToStore
+                selectedAccount.applyTransaction(amount: signedAmount, type: type)
             }
         } else {
             let newTransaction = Transaction(
-                amount: amount,
+                amount: signedAmount,
                 date: normalizedDate,
                 note: note,
                 type: type,
                 account: selectedAccount,
-                category: type == .selfTransfer ? nil : selectedCategory
+                category: (type.isTransferLike || type == .adjustment) ? nil : selectedCategory
             )
 
-            if type == .selfTransfer {
+            if type.isTransferLike {
                 newTransaction.toAccount = toAccount
                 modelContext.insert(newTransaction)
-                selectedAccount.applyTransfer(amount: amount, to: toAccount!)
+                selectedAccount.applyTransfer(amount: signedAmount, to: toAccount!)
+            } else if type == .adjustment {
+                modelContext.insert(newTransaction)
+                selectedAccount.applyTransaction(amount: signedAmount, type: type)
             } else {
                 let trimmedUPIApp = upiApp.trimmingCharacters(in: .whitespaces)
                 newTransaction.paymentMethod = paymentMethod
                 newTransaction.upiApp = paymentMethod == .upi && !trimmedUPIApp.isEmpty ? trimmedUPIApp : nil
+                newTransaction.merchantName = merchantNameToStore
 
                 if isSplit {
                     newTransaction.isSplit = true
@@ -395,7 +453,7 @@ struct AddEditTransactionView: View {
                 }
 
                 modelContext.insert(newTransaction)
-                selectedAccount.applyTransaction(amount: amount, type: type)
+                selectedAccount.applyTransaction(amount: signedAmount, type: type)
 
                 if isSplit {
                     createSplitAllocations(for: newTransaction, date: normalizedDate)
@@ -403,6 +461,13 @@ struct AddEditTransactionView: View {
             }
         }
         dismiss()
+    }
+
+    /// Trimmed merchant name for types that carry one, else nil.
+    private var merchantNameToStore: String? {
+        guard Self.merchantEligibleTypes.contains(type) else { return nil }
+        let trimmed = merchantName.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func createSplitAllocations(for transaction: Transaction, date: Date) {

@@ -107,13 +107,13 @@ struct VoiceEntrySheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
-                        stopRecording()
+                        stopRecording(discard: true)
                         dismiss()
                     }
                 }
             }
             .onAppear(perform: requestPermissions)
-            .onDisappear(perform: stopRecording)
+            .onDisappear { stopRecording(discard: true) }
         }
     }
 
@@ -184,12 +184,20 @@ struct VoiceEntrySheet: View {
         isRecording = true
     }
 
-    private func stopRecording() {
+    /// `discard: false` (the normal "tap to stop" path) lets the recognizer
+    /// finish processing buffered audio so the final, more accurate
+    /// transcription result still lands. `discard: true` (Cancel button,
+    /// onDisappear) abandons the task immediately.
+    private func stopRecording(discard: Bool = false) {
         guard isRecording || recognitionTask != nil else { return }
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         recognitionRequest?.endAudio()
-        recognitionTask?.cancel()
+        if discard {
+            recognitionTask?.cancel()
+        } else {
+            recognitionTask?.finish()
+        }
         recognitionRequest = nil
         recognitionTask = nil
         isRecording = false

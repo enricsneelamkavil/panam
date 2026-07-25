@@ -49,11 +49,19 @@ struct InvestmentsView: View {
                             let typeInvestments = investments.filter { $0.instrumentType == entry.type }
                             Section(entry.type.displayName) {
                                 ForEach(typeInvestments) { investment in
-                                    InvestmentRow(investment: investment)
-                                        .contentShape(Rectangle())
-                                        .onTapGesture {
-                                            investmentToEdit = investment
+                                    if investment.isRecurring {
+                                        NavigationLink {
+                                            InvestmentDetailView(investment: investment)
+                                        } label: {
+                                            RecurringInvestmentRow(investment: investment)
                                         }
+                                    } else {
+                                        InvestmentRow(investment: investment)
+                                            .contentShape(Rectangle())
+                                            .onTapGesture {
+                                                investmentToEdit = investment
+                                            }
+                                    }
                                 }
                                 .onDelete { offsets in
                                     deleteInvestments(at: offsets, from: typeInvestments)
@@ -139,12 +147,52 @@ private struct InvestmentRow: View {
     }
 }
 
+private struct RecurringInvestmentRow: View {
+    let investment: Investment
+
+    private var nextDueDate: Date? {
+        investment.occurrences
+            .filter { !$0.isContributed }
+            .min(by: { $0.dueDate < $1.dueDate })?
+            .dueDate
+    }
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(investment.name)
+                    if investment.autopayEnabled {
+                        Image(systemName: "a.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.tint)
+                    }
+                }
+                if let nextDueDate {
+                    Text("Next: \(nextDueDate.formatted(date: .abbreviated, time: .omitted))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("None scheduled")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Text("\(investment.investedValue.formatted(.currency(code: "INR").locale(Locale(identifier: "en_IN")))) contributed")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
 #Preview {
     InvestmentsView()
         .modelContainer(
             for: [Account.self, Category.self, Transaction.self,
                   RecurringPayment.self, RecurringOccurrence.self,
-                  Person.self, LendingEntry.self, Investment.self],
+                  Person.self, LendingEntry.self, Investment.self, InvestmentOccurrence.self],
             inMemory: true
         )
 }

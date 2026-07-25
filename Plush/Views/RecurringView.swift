@@ -7,7 +7,7 @@ import SwiftUI
 import SwiftData
 
 extension Cadence {
-    var displayName: String {
+    nonisolated var displayName: String {
         switch self {
         case .daily: "Daily"
         case .monthly: "Monthly"
@@ -24,9 +24,38 @@ struct RecurringView: View {
 
     @State private var showingAddSheet = false
 
+    private var activeSubscriptionsCount: Int {
+        payments.filter { $0.isSubscription && $0.isActive }.count
+    }
+
+    private var totalMonthlyEquivalent: Double {
+        payments
+            .filter { $0.isSubscription && $0.isActive }
+            .reduce(0) { $0 + $1.monthlyEquivalentCost }
+    }
+
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    NavigationLink {
+                        SubscriptionsView()
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Subscriptions")
+                                Text("\(activeSubscriptionsCount) active")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(totalMonthlyEquivalent,
+                                 format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+                                .font(.subheadline.monospacedDigit())
+                        }
+                    }
+                }
+
                 ForEach(payments) { payment in
                     NavigationLink {
                         RecurringDetailView(payment: payment)

@@ -21,11 +21,19 @@ struct AccountsView: View {
                     if !accountsOfType.isEmpty {
                         Section(sectionTitle(for: type)) {
                             ForEach(accountsOfType) { account in
-                                AccountRow(account: account)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture {
-                                        accountToEdit = account
+                                if account.type == .creditCard {
+                                    NavigationLink {
+                                        CreditCardDetailView(account: account)
+                                    } label: {
+                                        AccountRow(account: account)
                                     }
+                                } else {
+                                    AccountRow(account: account)
+                                        .contentShape(Rectangle())
+                                        .onTapGesture {
+                                            accountToEdit = account
+                                        }
+                                }
                             }
                             .onDelete { offsets in
                                 deleteAccounts(at: offsets, from: accountsOfType)

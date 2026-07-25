@@ -13,13 +13,17 @@ final class Investment {
     var isRecurring: Bool = false
     var isActive: Bool = true
     var cadence: Cadence?
+    var autopayEnabled: Bool = false
+    /// Amount already invested before tracking started, for recurring investments only.
+    var priorAmount: Double = 0
 
     @Relationship(deleteRule: .cascade, inverse: \InvestmentOccurrence.parent)
     var occurrences: [InvestmentOccurrence] = []
 
     init(instrumentType: InstrumentType, name: String, amount: Double, date: Date = .now,
          note: String = "", account: Account? = nil,
-         isRecurring: Bool = false, cadence: Cadence? = nil, isActive: Bool = true) {
+         isRecurring: Bool = false, cadence: Cadence? = nil, isActive: Bool = true,
+         autopayEnabled: Bool = false, priorAmount: Double = 0) {
         self.instrumentType = instrumentType
         self.name = name
         self.amount = amount
@@ -29,6 +33,8 @@ final class Investment {
         self.isRecurring = isRecurring
         self.cadence = cadence
         self.isActive = isActive
+        self.autopayEnabled = autopayEnabled
+        self.priorAmount = priorAmount
     }
 }
 
@@ -40,16 +46,17 @@ extension Investment {
     }
 
     /// Total value invested: for lumpsum investments this is the recorded amount;
-    /// for recurring (SIP-style) investments it is the sum of contributed occurrences.
+    /// for recurring (SIP-style) investments it is the prior amount plus
+    /// everything contributed since tracking started.
     var investedValue: Double {
-        isRecurring ? totalContributed : amount
+        isRecurring ? priorAmount + totalContributed : amount
     }
 }
 
 enum InstrumentType: String, Codable, CaseIterable {
-    case mutualFund, stock, fixedDeposit, ppf, epf, gold, chitFund, other
+    case mutualFund, stock, fixedDeposit, ppf, epf, gold, silver, chitFund, other
 
-    var displayName: String {
+    nonisolated var displayName: String {
         switch self {
         case .mutualFund: return "Mutual Fund"
         case .stock: return "Stock"
@@ -57,6 +64,7 @@ enum InstrumentType: String, Codable, CaseIterable {
         case .ppf: return "PPF"
         case .epf: return "EPF"
         case .gold: return "Gold"
+        case .silver: return "Silver"
         case .chitFund: return "Chit Fund"
         case .other: return "Other"
         }

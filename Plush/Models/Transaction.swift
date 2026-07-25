@@ -61,6 +61,14 @@ extension TransactionType {
         }
     }
 
+    /// True for types that count towards Expense totals directly (before refunds are netted out).
+    nonisolated var isExpenseLike: Bool {
+        switch self {
+        case .expense, .taxAndFee: true
+        default: false
+        }
+    }
+
     /// True for account-to-account transfers. Excluded from both Income and Expense totals.
     nonisolated var isTransferLike: Bool {
         switch self {

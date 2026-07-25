@@ -76,8 +76,12 @@ nonisolated struct SpendSummaryTool: Tool {
             }
         }
 
-        let income = relevant.filter { $0.type == .income }.reduce(0) { $0 + $1.amount }
-        let expense = relevant.filter { $0.type == .expense }.reduce(0) { $0 + $1.amount }
+        let income = relevant
+            .filter { $0.type.isIncomeLike && $0.type != .refund }
+            .reduce(0) { $0 + $1.amount }
+        let spent = relevant.filter { $0.type.isExpenseLike }.reduce(0) { $0 + $1.amount }
+        let refunded = relevant.filter { $0.type == .refund }.reduce(0) { $0 + $1.amount }
+        let expense = spent - refunded
         let filterNote = arguments.categoryName.map { " in category '\($0)'" } ?? ""
         return "For \(arguments.period)\(filterNote): income \(inr(income)), expense \(inr(expense)), net \(inr(income - expense)), across \(relevant.count) transaction(s)."
     }

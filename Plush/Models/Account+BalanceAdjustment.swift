@@ -7,14 +7,18 @@ import Foundation
 
 extension Account {
     /// Signed balance change a transaction of the given amount/type causes on this account.
-    /// Bank/Cash/Wallet: expense decreases balance, income increases it.
-    /// Credit card: expense increases outstanding, income (bill payment) decreases it.
+    /// isIncomeLike types (income, interest, dividend, refund): bank/cash/wallet add, card subtracts.
+    /// .expense/.taxAndFee: bank/cash/wallet subtract, card adds.
+    /// .adjustment bypasses direction entirely — the stored signed amount is applied as-is.
+    /// .selfTransfer/.cashWithdrawal never reach here — they go through applyTransfer/reverseTransfer.
     private func balanceDelta(amount: Double, type: TransactionType) -> Double {
+        guard type != .adjustment else { return amount }
+        let direction: Double = type.isIncomeLike ? 1 : -1
         switch self.type {
         case .bank, .cash, .wallet:
-            type == .expense ? -amount : amount
+            return amount * direction
         case .creditCard:
-            type == .expense ? amount : -amount
+            return -amount * direction
         }
     }
 

@@ -22,6 +22,11 @@ struct AddEditInvestmentView: View {
     @State private var note = ""
     @State private var selectedAccount: Account?
 
+    @State private var isRecurring = true
+    @State private var cadence: Cadence = .monthly
+    @State private var autopayEnabled = false
+    @State private var priorAmount: Double = 0
+
     private var isEditing: Bool { investment != nil }
 
     private var canSave: Bool {
@@ -43,6 +48,30 @@ struct AddEditInvestmentView: View {
 
                     TextField("Amount", value: $amount, format: .number)
                         .keyboardType(.decimalPad)
+                }
+
+                Section {
+                    Toggle("Recurring (SIP)", isOn: $isRecurring)
+                        .disabled(isEditing)
+
+                    if isRecurring {
+                        Picker("Cadence", selection: $cadence) {
+                            ForEach(Cadence.allCases, id: \.self) { cadence in
+                                Text(cadence.displayName).tag(cadence)
+                            }
+                        }
+
+                        Toggle("Autopay", isOn: $autopayEnabled)
+
+                        if !isEditing {
+                            TextField("Already Invested (before this)", value: $priorAmount, format: .number)
+                                .keyboardType(.decimalPad)
+                        }
+                    }
+                } footer: {
+                    if isEditing {
+                        Text("Recurring can't be toggled after creation.")
+                    }
                 }
 
                 Section {
@@ -85,6 +114,9 @@ struct AddEditInvestmentView: View {
         date = investment.date
         note = investment.note
         selectedAccount = investment.account
+        isRecurring = investment.isRecurring
+        cadence = investment.cadence ?? .monthly
+        autopayEnabled = investment.autopayEnabled
     }
 
     /// The preset category used for investment money movements.
@@ -101,9 +133,13 @@ struct AddEditInvestmentView: View {
         guard !trimmedName.isEmpty else { return }
 
         if let investment {
-            // Simplest safe approach: reverse and drop the old linked
-            // transaction, then create a fresh one below if needed.
-            if let old = investment.linkedTransaction {
+            let wasRecurring = investment.isRecurring
+            let originalAmount = investment.amount
+            let originalCadence = investment.cadence
+
+            if !wasRecurring, let old = investment.linkedTransaction {
+                // Simplest safe approach: reverse and drop the old linked
+                // transaction, then create a fresh one below if needed.
                 old.account?.reverseTransaction(amount: old.amount, type: old.type)
                 modelContext.delete(old)
                 investment.linkedTransaction = nil
@@ -116,7 +152,16 @@ struct AddEditInvestmentView: View {
             investment.note = note
             investment.account = selectedAccount
 
-            linkTransactionIfNeeded(to: investment, amount: amount, name: trimmedName)
+            if wasRecurring {
+                investment.autopayEnabled = autopayEnabled
+                investment.cadence = cadence
+
+                if amount != originalAmount || cadence != originalCadence {
+                    InvestmentOccurrenceGenerator.regenerateFutureUncontributed(for: investment, context: modelContext)
+                }
+            } else {
+                linkTransactionIfNeeded(to: investment, amount: amount, name: trimmedName)
+            }
         } else {
             let newInvestment = Investment(
                 instrumentType: instrumentType,
@@ -124,10 +169,20 @@ struct AddEditInvestmentView: View {
                 amount: amount,
                 date: date,
                 note: note,
-                account: selectedAccount
+                account: selectedAccount,
+                isRecurring: isRecurring,
+                cadence: isRecurring ? cadence : nil,
+                isActive: true,
+                autopayEnabled: isRecurring ? autopayEnabled : false,
+                priorAmount: isRecurring ? priorAmount : 0
             )
             modelContext.insert(newInvestment)
-            linkTransactionIfNeeded(to: newInvestment, amount: amount, name: trimmedName)
+
+            if isRecurring {
+                InvestmentOccurrenceGenerator.generateOccurrences(for: newInvestment, context: modelContext)
+            } else {
+                linkTransactionIfNeeded(to: newInvestment, amount: amount, name: trimmedName)
+            }
         }
         dismiss()
     }
@@ -153,7 +208,7 @@ struct AddEditInvestmentView: View {
         .modelContainer(
             for: [Account.self, Category.self, Transaction.self,
                   RecurringPayment.self, RecurringOccurrence.self,
-                  Person.self, LendingEntry.self, Investment.self],
+                  Person.self, LendingEntry.self, Investment.self, InvestmentOccurrence.self],
             inMemory: true
         )
 }

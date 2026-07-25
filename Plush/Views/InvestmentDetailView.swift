@@ -22,6 +22,13 @@ struct InvestmentDetailView: View {
         investment.occurrences.sorted { $0.dueDate < $1.dueDate }
     }
 
+    private var nextDueDate: Date? {
+        investment.occurrences
+            .filter { !$0.isContributed }
+            .min(by: { $0.dueDate < $1.dueDate })?
+            .dueDate
+    }
+
     var body: some View {
         List {
             Section {
@@ -29,8 +36,26 @@ struct InvestmentDetailView: View {
                 if let cadence = investment.cadence {
                     LabeledContent("Cadence", value: cadence.displayName)
                 }
+                if let nextDueDate {
+                    LabeledContent("Next") {
+                        Text(nextDueDate, format: .dateTime.day().month(.abbreviated).year())
+                    }
+                }
+                if investment.autopayEnabled {
+                    HStack {
+                        Text("Autopay")
+                        Spacer()
+                        Image(systemName: "a.circle.fill")
+                            .foregroundStyle(.tint)
+                    }
+                }
                 LabeledContent("Amount per Installment") {
                     Text(investment.amount, format: Self.currencyFormat)
+                }
+                if investment.priorAmount > 0 {
+                    LabeledContent("Starting Amount") {
+                        Text(investment.priorAmount, format: Self.currencyFormat)
+                    }
                 }
                 LabeledContent("Total Contributed") {
                     Text(investment.totalContributed, format: Self.currencyFormat)

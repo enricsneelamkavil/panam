@@ -22,8 +22,7 @@ final class MoneyEvent {
     var upiApp: String?
     var isSplit: Bool
     var myPortionAmount: Double?
-    var legacyRecordID: PersistentIdentifier?   // traceability back to the original record during migration
-    var legacyRecordDescription: String?        // human-readable description used during one-time migration
+    var legacyRecordDescription: String?        // human-readable description of the original record, for traceability during migration
 
     init(type: MoneyEventType, amount: Double, date: Date, note: String = "") {
         self.type = type

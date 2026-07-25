@@ -24,6 +24,7 @@ struct DashboardView: View {
     @Query(sort: \RecurringOccurrence.dueDate) private var occurrences: [RecurringOccurrence]
     @Query(sort: \Person.name) private var people: [Person]
     @Query private var accounts: [Account]
+    @Query private var recurringPayments: [RecurringPayment]
 
     @State private var occurrenceToPay: RecurringOccurrence?
     @State private var showingChat = false
@@ -92,12 +93,18 @@ struct DashboardView: View {
         return transactions.filter { $0.date >= interval.start && $0.date < interval.end }
     }
 
+    /// Income-like transactions, excluding refund — a refund reduces Expense instead of adding to Income.
     private var incomeTotal: Double {
-        periodTransactions.filter { $0.type == .income }.reduce(0) { $0 + $1.amount }
+        periodTransactions
+            .filter { $0.type.isIncomeLike && $0.type != .refund }
+            .reduce(0) { $0 + $1.amount }
     }
 
+    /// .expense + .taxAndFee, netted against refunds.
     private var expenseTotal: Double {
-        periodTransactions.filter { $0.type == .expense }.reduce(0) { $0 + $1.amount }
+        let spent = periodTransactions.filter { $0.type.isExpenseLike }.reduce(0) { $0 + $1.amount }
+        let refunded = periodTransactions.filter { $0.type == .refund }.reduce(0) { $0 + $1.amount }
+        return spent - refunded
     }
 
     private var categoryTotals: [(category: Category, total: Double)] {
@@ -162,7 +169,7 @@ struct DashboardView: View {
 
     // "netWorth" removed — net worth is now shown directly in the pinned balance card.
     private static let defaultSectionOrder = [
-        "summary", "upcomingDues", "spendBar", "topCategories", "accounts", "lending",
+        "summary", "upcomingDues", "spendBar", "topCategories", "accounts", "lending", "recurring",
     ]
 
     @AppStorage("dashboardSectionOrder") private var sectionOrderJSON = ""
@@ -300,6 +307,7 @@ struct DashboardView: View {
         case "topCategories": topCategoriesSection
         case "accounts":     accountsSection
         case "lending":      lendingSection
+        case "recurring":    recurringSection
         default:             EmptyView()
         }
     }
@@ -560,6 +568,34 @@ struct DashboardView: View {
                             .foregroundStyle(.red)
                     }
                 }
+            }
+        }
+        .dashboardCard()
+    }
+
+    // MARK: - Card 8: Recurring
+
+    private var activeRecurringCount: Int {
+        recurringPayments.filter { $0.isActive }.count
+    }
+
+    private var recurringSection: some View {
+        NavigationLink {
+            RecurringView()
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Recurring")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text("\(activeRecurringCount) active")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
         }
         .dashboardCard()

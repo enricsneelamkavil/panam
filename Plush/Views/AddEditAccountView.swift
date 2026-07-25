@@ -9,6 +9,7 @@ import SwiftData
 struct AddEditAccountView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Query private var accounts: [Account]
 
     /// The account being edited, or nil when creating a new one.
     var account: Account?
@@ -22,22 +23,40 @@ struct AddEditAccountView: View {
 
     private var isEditing: Bool { account != nil }
 
+    /// A Cash account other than the one being edited already exists.
+    private var duplicateCashExists: Bool {
+        accounts.contains { $0.type == .cash && $0.persistentModelID != account?.persistentModelID }
+    }
+
     private var canSave: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty && balance != nil
+        guard balance != nil else { return false }
+        if type == .cash {
+            return !duplicateCashExists
+        }
+        return !name.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("Name", text: $name)
+                    if type != .cash {
+                        TextField("Name", text: $name)
+                    }
 
                     Picker("Type", selection: $type) {
                         Text("Bank").tag(AccountType.bank)
                         Text("Cash").tag(AccountType.cash)
+                        Text("Wallet").tag(AccountType.wallet)
                         Text("Credit Card").tag(AccountType.creditCard)
                     }
                     .pickerStyle(.segmented)
+
+                    if type == .cash && duplicateCashExists {
+                        Text("A Cash account already exists — only one is allowed.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
 
                     TextField(
                         type == .creditCard ? "Current Outstanding" : "Balance",
@@ -91,7 +110,8 @@ struct AddEditAccountView: View {
 
     private func save() {
         guard let balance else { return }
-        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        guard type != .cash || !duplicateCashExists else { return }
+        let trimmedName = type == .cash ? "Cash" : name.trimmingCharacters(in: .whitespaces)
         guard !trimmedName.isEmpty else { return }
 
         // Clamp credit card day fields to 1–31; drop them for non-credit-card types.
