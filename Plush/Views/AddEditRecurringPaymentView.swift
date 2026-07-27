@@ -97,8 +97,9 @@ struct AddEditRecurringPaymentView: View {
                     Button("Save") {
                         save()
                     }
-                    .disabled(!canSave)
+                    .buttonStyle(.borderedProminent)
                     .tint(.appPrimary)
+                    .disabled(!canSave)
                 }
             }
             .onAppear(perform: populateFromPayment)
@@ -127,8 +128,9 @@ struct AddEditRecurringPaymentView: View {
         let necessary = isSubscription ? isNecessary : nil
 
         if let payment {
-            let amountOrCadenceChanged = payment.expectedAmount != expectedAmount
+            let needsRegeneration = payment.expectedAmount != expectedAmount
                 || payment.cadence != cadence
+                || payment.startDate != startDate
 
             payment.name = trimmedName
             payment.expectedAmount = expectedAmount
@@ -140,7 +142,7 @@ struct AddEditRecurringPaymentView: View {
             payment.isNecessary = necessary
             payment.isActive = isActive
 
-            if amountOrCadenceChanged {
+            if needsRegeneration {
                 RecurringOccurrenceGenerator.regenerateFutureUnpaid(for: payment, context: modelContext)
             }
         } else {

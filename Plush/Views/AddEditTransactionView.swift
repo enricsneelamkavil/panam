@@ -11,6 +11,14 @@ private struct SplitRow: Identifiable {
     var person: Person? = nil
     var newPersonName: String = ""
     var amount: Double? = nil
+    /// True once the user has typed a value directly into this row — excludes
+    /// it from auto-redistribution in "Split by Amount" mode.
+    var isLocked: Bool = false
+}
+
+private enum SplitMode: String, CaseIterable {
+    case equal = "Split Equally"
+    case byAmount = "Split by Amount"
 }
 
 struct AddEditTransactionView: View {
@@ -38,7 +46,9 @@ struct AddEditTransactionView: View {
     @State private var showingVoiceEntry = false
     @State private var isSplit = false
     @State private var myPortion: Double?
+    @State private var myPortionLocked = false
     @State private var splitRows: [SplitRow] = [SplitRow()]
+    @State private var splitMode: SplitMode = .equal
 
     /// Types that carry a merchant name.
     private static let merchantEligibleTypes: Set<TransactionType> = [.expense, .refund, .taxAndFee]
@@ -80,6 +90,93 @@ struct AddEditTransactionView: View {
         (myPortion ?? 0) + splitRows.compactMap(\.amount).reduce(0, +)
     }
 
+    /// A binding for "Your Portion" that locks it as soon as the user types
+    /// into it, then redistributes the remainder across the still-unlocked rows.
+    private var myPortionBinding: Binding<Double?> {
+        Binding(
+            get: { myPortion },
+            set: { newValue in
+                myPortion = newValue
+                myPortionLocked = true
+                redistributeRemainder()
+            }
+        )
+    }
+
+    /// A binding for a split row's amount that locks that row as soon as the
+    /// user types into it, then redistributes the remainder across the rest.
+    private func lockingBinding(for row: Binding<SplitRow>) -> Binding<Double?> {
+        Binding(
+            get: { row.wrappedValue.amount },
+            set: { newValue in
+                row.wrappedValue.amount = newValue
+                row.wrappedValue.isLocked = true
+                redistributeRemainder()
+            }
+        )
+    }
+
+    private func rounded2(_ value: Double) -> Double {
+        (value * 100).rounded() / 100
+    }
+
+    /// Divides the total evenly across every participant (you + each row),
+    /// giving any rounding remainder to the last participant so the sum matches exactly.
+    private func recalcEqualSplit() {
+        guard let total = amount, total > 0 else { return }
+        let count = splitRows.count + 1
+        let each = rounded2(total / Double(count))
+        myPortion = each
+        for i in splitRows.indices {
+            splitRows[i].amount = each
+        }
+        let remainder = rounded2(total - each * Double(count))
+        if remainder != 0 {
+            if splitRows.isEmpty {
+                myPortion = (myPortion ?? 0) + remainder
+            } else {
+                let lastIndex = splitRows.count - 1
+                splitRows[lastIndex].amount = (splitRows[lastIndex].amount ?? 0) + remainder
+            }
+        }
+    }
+
+    /// Google-Pay-style auto-fill: whatever remains after locked (manually-typed)
+    /// portions is split evenly across every still-unlocked participant.
+    private func redistributeRemainder() {
+        guard let total = amount else { return }
+        let lockedSum = (myPortionLocked ? (myPortion ?? 0) : 0)
+            + splitRows.filter(\.isLocked).compactMap(\.amount).reduce(0, +)
+        let unlockedIndices = splitRows.indices.filter { !splitRows[$0].isLocked }
+        let myPortionUnlocked = !myPortionLocked
+        let unlockedCount = unlockedIndices.count + (myPortionUnlocked ? 1 : 0)
+        guard unlockedCount > 0 else { return }
+
+        let remainder = total - lockedSum
+        let each = rounded2(remainder / Double(unlockedCount))
+
+        if myPortionUnlocked { myPortion = each }
+        for i in unlockedIndices { splitRows[i].amount = each }
+
+        // Give any rounding remainder to the last unlocked participant.
+        let diff = rounded2(remainder - each * Double(unlockedCount))
+        if diff != 0 {
+            if let lastRowIndex = unlockedIndices.last {
+                splitRows[lastRowIndex].amount = (splitRows[lastRowIndex].amount ?? 0) + diff
+            } else if myPortionUnlocked {
+                myPortion = (myPortion ?? 0) + diff
+            }
+        }
+    }
+
+    private func recalcCurrentSplit() {
+        if splitMode == .equal {
+            recalcEqualSplit()
+        } else {
+            redistributeRemainder()
+        }
+    }
+
     private var canSave: Bool {
         guard let amount, amount > 0 else { return false }
         if type.isTransferLike {
@@ -104,17 +201,17 @@ struct AddEditTransactionView: View {
         NavigationStack {
             Form {
                 if !isEditing {
-                    Section {
-                        Button {
-                            showingVoiceEntry = true
-                        } label: {
-                            Label("Record with Voice", systemImage: "mic.fill")
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.appPrimary)
+                    Button {
+                        showingVoiceEntry = true
+                    } label: {
+                        Label("Record with Voice", systemImage: "mic.fill")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.appPrimary)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets())
                 }
 
                 Section {
@@ -215,9 +312,24 @@ struct AddEditTransactionView: View {
                     }
 
                     if isSplit {
+                        Section {
+                            Picker("Split Mode", selection: $splitMode) {
+                                ForEach(SplitMode.allCases, id: \.self) { mode in
+                                    Text(mode.rawValue).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+
                         Section("Your Portion") {
-                            TextField("Your share of the total", value: $myPortion, format: .number)
-                                .keyboardType(.decimalPad)
+                            if splitMode == .equal {
+                                LabeledContent("Your share") {
+                                    Text(myPortion ?? 0, format: Self.inrFormat)
+                                }
+                            } else {
+                                TextField("Your share of the total", value: myPortionBinding, format: .number)
+                                    .keyboardType(.decimalPad)
+                            }
                         }
 
                         ForEach($splitRows) { $row in
@@ -231,11 +343,18 @@ struct AddEditTransactionView: View {
                                 if row.person == nil {
                                     TextField("Name", text: $row.newPersonName)
                                 }
-                                TextField("Their share", value: $row.amount, format: .number)
-                                    .keyboardType(.decimalPad)
+                                if splitMode == .equal {
+                                    LabeledContent("Their share") {
+                                        Text(row.amount ?? 0, format: Self.inrFormat)
+                                    }
+                                } else {
+                                    TextField("Their share", value: lockingBinding(for: $row), format: .number)
+                                        .keyboardType(.decimalPad)
+                                }
                                 if splitRows.count > 1 {
                                     Button("Remove", role: .destructive) {
                                         splitRows.removeAll { $0.id == row.id }
+                                        recalcCurrentSplit()
                                     }
                                 }
                             }
@@ -244,6 +363,7 @@ struct AddEditTransactionView: View {
                         Section {
                             Button("Add Another Person") {
                                 splitRows.append(SplitRow())
+                                recalcCurrentSplit()
                             }
 
                             if let total = amount, abs(total - splitPortionSum) > 0.01 {
@@ -286,8 +406,28 @@ struct AddEditTransactionView: View {
             .onChange(of: isSplit) { _, on in
                 if !on {
                     myPortion = nil
+                    myPortionLocked = false
                     splitRows = [SplitRow()]
+                    splitMode = .equal
+                } else {
+                    myPortionLocked = false
+                    splitMode = .equal
+                    for i in splitRows.indices { splitRows[i].isLocked = false }
+                    recalcEqualSplit()
                 }
+            }
+            .onChange(of: splitMode) { _, newMode in
+                myPortionLocked = false
+                for i in splitRows.indices { splitRows[i].isLocked = false }
+                if newMode == .equal {
+                    recalcEqualSplit()
+                } else {
+                    redistributeRemainder()
+                }
+            }
+            .onChange(of: amount) { _, _ in
+                guard isSplit else { return }
+                recalcCurrentSplit()
             }
             .onChange(of: paymentMethod) {
                 guard !type.isTransferLike else { return }
@@ -309,8 +449,9 @@ struct AddEditTransactionView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
-                        .disabled(!canSave)
+                        .buttonStyle(.borderedProminent)
                         .tint(.appPrimary)
+                        .disabled(!canSave)
                 }
             }
             .sheet(isPresented: $showingVoiceEntry) {

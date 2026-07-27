@@ -23,6 +23,7 @@ final class MoneyEvent {
     var isSplit: Bool
     var myPortionAmount: Double?
     var legacyRecordDescription: String?        // human-readable description of the original record, for traceability during migration
+    var sourceTransaction: Transaction?          // back-reference for Transaction-originated events (e.g. daily-recurring exclusion in search)
 
     init(type: MoneyEventType, amount: Double, date: Date, note: String = "") {
         self.type = type

@@ -4,43 +4,39 @@
   },
   "groups" : [
     {
-      "blend-mode" : "normal",
-      "blur-material" : null,
       "layers" : [
         {
-          "fill" : "none",
-          "glass" : true,
-          "hidden" : false,
-          "image-name" : "logoIcon-1.svg",
-          "name" : "logoIcon-1"
+          "fill" : {
+            "solid" : "display-p3:0.71719,0.62611,0.48234,1.00000"
+          },
+          "image-name" : "logoIcon.svg",
+          "name" : "logoIcon",
+          "position" : {
+            "scale" : 1.46,
+            "translation-in-points" : [
+              -11.897875869158952,
+              0.6011999999815316
+            ]
+          }
         },
         {
           "fill-specializations" : [
-            {
-              "value" : {
-                "solid" : "display-p3:0.00000,0.00000,0.00000,1.00000"
-              }
-            },
             {
               "appearance" : "dark",
               "value" : {
                 "solid" : "extended-gray:1.00000,1.00000"
               }
-            },
-            {
-              "appearance" : "tinted",
-              "value" : {
-                "solid" : "display-p3:1.00000,1.00000,1.00000,1.00000"
-              }
             }
           ],
-          "glass" : true,
-          "image-name" : "logoIcon-2.svg",
-          "name" : "logoIcon-2"
-        },
-        {
-          "image-name" : "logoIcon 2.svg",
-          "name" : "logoIcon 2"
+          "image-name" : "logoIcon-1 2.svg",
+          "name" : "logoIcon-1 2",
+          "position" : {
+            "scale" : 1.46,
+            "translation-in-points" : [
+              -11.897875869158952,
+              0.6011999999815316
+            ]
+          }
         }
       ],
       "shadow" : {

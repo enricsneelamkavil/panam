@@ -55,12 +55,20 @@ struct TransactionsView: View {
     private var searchResults: [MoneyEvent] {
         guard !searchText.isEmpty else { return [] }
         let q = searchText.lowercased()
+        let hidden = hideRecurring ? autoRecurringIDs : []
         return allMoneyEvents.filter { event in
-            event.note.lowercased().contains(q) ||
+            if let sourceID = event.sourceTransaction?.persistentModelID, hidden.contains(sourceID) {
+                return false
+            }
+            return event.note.lowercased().contains(q) ||
             (event.merchant?.lowercased().contains(q) == true) ||
             (event.category?.name.lowercased().contains(q) == true) ||
             (event.person?.name.lowercased().contains(q) == true) ||
-            (event.account?.name.lowercased().contains(q) == true)
+            (event.account?.name.lowercased().contains(q) == true) ||
+            (event.toAccount?.name.lowercased().contains(q) == true) ||
+            (event.paymentMethod?.rawValue.lowercased().contains(q) == true) ||
+            (event.upiApp?.lowercased().contains(q) == true) ||
+            String(event.amount).contains(q)
         }
     }
 
@@ -449,7 +457,7 @@ struct TransactionRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                if let method = transaction.paymentMethod {
+                if !transaction.isLendingRepayment, let method = transaction.paymentMethod {
                     Text(transaction.upiApp.map { "\(method.rawValue) · \($0)" } ?? method.rawValue)
                         .font(.caption)
                         .foregroundStyle(.secondary)

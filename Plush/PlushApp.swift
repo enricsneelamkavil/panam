@@ -52,7 +52,50 @@ struct PlushApp: App {
     init() {
         CategorySeeder.seedIfNeeded(sharedModelContainer.mainContext)
         MoneyEventMigration.runOneTimeMigration(context: sharedModelContainer.mainContext)
+        if ProcessInfo.processInfo.arguments.contains("--seed-backfill-test") {
+            Self.seedBackfillTestScenario(sharedModelContainer.mainContext)
+        }
+        MoneyEventMigration.runSourceTransactionBackfillIfNeeded(context: sharedModelContainer.mainContext)
         AutopayProcessor.processAutopays(context: sharedModelContainer.mainContext)
+    }
+
+    /// TEMPORARY test scaffold — simulates a pre-fix daily-recurring MoneyEvent
+    /// (no sourceTransaction link) so the backfill can be verified end-to-end.
+    /// Remove after verifying the backfill + search-exclusion behavior.
+    static func seedBackfillTestScenario(_ context: ModelContext) {
+        let account = Account(name: "Daily Test Account", type: .bank)
+        let category = Category(name: "Daily Test Category")
+        context.insert(account)
+        context.insert(category)
+
+        let startDate = Calendar.current.startOfDay(for: .now)
+        let payment = RecurringPayment(
+            name: "DailyCoffeeRun", expectedAmount: 50, cadence: .daily,
+            startDate: startDate, category: category, account: account
+        )
+        context.insert(payment)
+
+        let occurrence = RecurringOccurrence(dueDate: startDate, expectedAmount: 50, parent: payment)
+        occurrence.isPaid = true
+        occurrence.actualAmount = 50
+        occurrence.paidDate = startDate
+        context.insert(occurrence)
+
+        let transaction = Transaction(
+            amount: 50, date: startDate, note: payment.name,
+            type: .expense, account: account, category: category
+        )
+        context.insert(transaction)
+        occurrence.linkedTransaction = transaction
+
+        // Pre-fix MoneyEvent: matches the transaction's note/amount/date exactly,
+        // but has no sourceTransaction link — this is what the backfill must fix.
+        let event = MoneyEvent(type: .expense, amount: 50, date: startDate, note: payment.name)
+        event.account = account
+        event.category = category
+        context.insert(event)
+
+        try? context.save()
     }
 
     var body: some Scene {

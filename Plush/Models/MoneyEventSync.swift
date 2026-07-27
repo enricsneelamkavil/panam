@@ -57,6 +57,7 @@ enum MoneyEventSync {
         event.upiApp = tx.upiApp
         event.isSplit = tx.isSplit
         event.myPortionAmount = tx.myPortionAmount
+        event.sourceTransaction = tx
         return event
     }
 

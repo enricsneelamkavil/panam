@@ -49,6 +49,7 @@ struct LendingLedgerView: View {
                 } label: {
                     Label("Add Entry", systemImage: "plus")
                 }
+                .buttonStyle(.borderedProminent)
                 .tint(.appPrimary)
             }
         }

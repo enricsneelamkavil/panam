@@ -53,7 +53,8 @@ struct LoanDetailView: View {
                     dueDate: installment.dueDate,
                     expectedAmount: installment.amount,
                     actualAmount: installment.amount,
-                    completedDate: installment.paidDate
+                    completedDate: installment.paidDate,
+                    onMarkUnpaid: { markUnpaid(installment) }
                 )
                 .presentationDetents([.medium])
             } else {
@@ -100,6 +101,16 @@ struct LoanDetailView: View {
         installment.linkedTransaction = transaction
         loan.account?.applyTransaction(amount: actual, type: .expense)
         MoneyEventSync.sync(paidLoanInstallment: installment, context: modelContext)
+    }
+
+    private func markUnpaid(_ installment: LoanInstallment) {
+        if let transaction = installment.linkedTransaction {
+            transaction.account?.reverseTransaction(amount: transaction.amount, type: transaction.type)
+            modelContext.delete(transaction)
+            installment.linkedTransaction = nil
+        }
+        installment.isPaid = false
+        installment.paidDate = nil
     }
 }
 

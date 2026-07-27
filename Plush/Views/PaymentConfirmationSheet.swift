@@ -41,12 +41,17 @@ struct PaymentConfirmationSheet: View {
                         .keyboardType(.decimalPad)
                 }
 
-                Section {
-                    Button(title) {
-                        confirm()
-                    }
-                    .disabled(!canConfirm)
+                Button {
+                    confirm()
+                } label: {
+                    Text(title)
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(.appPrimary)
+                .disabled(!canConfirm)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
             }
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)

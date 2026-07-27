@@ -61,8 +61,9 @@ struct AddEditEMIView: View {
                     Button("Save") {
                         save()
                     }
-                    .disabled(!canSave)
+                    .buttonStyle(.borderedProminent)
                     .tint(.appPrimary)
+                    .disabled(!canSave)
                 }
             }
         }

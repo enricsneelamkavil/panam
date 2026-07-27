@@ -15,13 +15,13 @@ struct InvestmentsView: View {
     @State private var investmentToEdit: Investment?
 
     private var totalInvested: Double {
-        investments.reduce(0) { $0 + $1.amount }
+        investments.reduce(0) { $0 + $1.investedValue }
     }
 
     /// Invested total per instrument type, in declaration order, empty types omitted.
     private var typeTotals: [(type: InstrumentType, total: Double)] {
         InstrumentType.allCases.compactMap { type in
-            let total = investments.filter { $0.instrumentType == type }.reduce(0) { $0 + $1.amount }
+            let total = investments.filter { $0.instrumentType == type }.reduce(0) { $0 + $1.investedValue }
             return total > 0 ? (type: type, total: total) : nil
         }
     }
@@ -75,6 +75,8 @@ struct InvestmentsView: View {
                     } label: {
                         Label("Add Investment", systemImage: "plus")
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.appPrimary)
                 }
             }
             .sheet(isPresented: $showingAddSheet) {

@@ -11,6 +11,8 @@ import SwiftData
 struct InvestmentDetailView: View {
     let investment: Investment
 
+    @Environment(\.modelContext) private var modelContext
+
     @State private var showingEditSheet = false
     @State private var selectedOccurrence: InvestmentOccurrence?
 
@@ -74,6 +76,15 @@ struct InvestmentDetailView: View {
                         OccurrenceRow(occurrence: occurrence)
                     }
                     .buttonStyle(.plain)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        if occurrence.isContributed {
+                            Button(role: .destructive) {
+                                markUnpaid(occurrence)
+                            } label: {
+                                Label("Mark as Unpaid", systemImage: "arrow.uturn.backward")
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -98,7 +109,8 @@ struct InvestmentDetailView: View {
                     actualAmount: occurrence.actualAmount,
                     completedDate: occurrence.contributedDate,
                     amountLabel: "Contributed",
-                    dateLabel: "Contributed On"
+                    dateLabel: "Contributed On",
+                    onMarkUnpaid: { markUnpaid(occurrence) }
                 )
                 .presentationDetents([.medium])
             } else {
@@ -106,6 +118,17 @@ struct InvestmentDetailView: View {
                     .presentationDetents([.medium])
             }
         }
+    }
+
+    private func markUnpaid(_ occurrence: InvestmentOccurrence) {
+        if let transaction = occurrence.linkedTransaction {
+            transaction.account?.reverseTransaction(amount: transaction.amount, type: transaction.type)
+            modelContext.delete(transaction)
+            occurrence.linkedTransaction = nil
+        }
+        occurrence.isContributed = false
+        occurrence.actualAmount = nil
+        occurrence.contributedDate = nil
     }
 }
 

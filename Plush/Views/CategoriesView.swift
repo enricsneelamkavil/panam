@@ -47,6 +47,8 @@ struct CategoriesView: View {
                 } label: {
                     Label("Add Category", systemImage: "plus")
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(.appPrimary)
             }
         }
         .sheet(isPresented: $showingAddSheet) {
@@ -155,6 +157,8 @@ private struct AddEditCategoryView: View {
                     Button("Save") {
                         save()
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.appPrimary)
                     .disabled(!canSave)
                 }
             }

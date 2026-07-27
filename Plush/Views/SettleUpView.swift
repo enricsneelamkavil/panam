@@ -72,8 +72,9 @@ struct SettleUpView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Confirm") { save() }
-                        .disabled(!canConfirm)
+                        .buttonStyle(.borderedProminent)
                         .tint(.appPrimary)
+                        .disabled(!canConfirm)
                 }
             }
             .onAppear {
@@ -119,6 +120,8 @@ struct SettleUpView: View {
             // A settlement (.repaymentReceived/.repaymentMade) cancels a debt —
             // it's not real income/spend, so it's excluded from flow totals.
             transaction.isLendingRepayment = true
+            // No payment method for a settlement — it's not shown on repayment rows.
+            transaction.paymentMethod = nil
             modelContext.insert(transaction)
             entry.linkedTransaction = transaction
             selectedAccount.applyTransaction(amount: amount, type: settlementKind.transactionType)

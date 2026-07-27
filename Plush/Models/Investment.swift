@@ -54,14 +54,12 @@ extension Investment {
 }
 
 enum InstrumentType: String, Codable, CaseIterable {
-    case mutualFund, stock, fixedDeposit, ppf, epf, gold, silver, chitFund, other
+    case mutualFund, stock, epf, gold, silver, chitFund, other
 
     nonisolated var displayName: String {
         switch self {
         case .mutualFund: return "Mutual Fund"
         case .stock: return "Stock"
-        case .fixedDeposit: return "Fixed Deposit"
-        case .ppf: return "PPF"
         case .epf: return "EPF"
         case .gold: return "Gold"
         case .silver: return "Silver"

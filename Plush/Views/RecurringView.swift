@@ -81,6 +81,8 @@ struct RecurringView: View {
                     } label: {
                         Label("Add Recurring Payment", systemImage: "plus")
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.appPrimary)
                 }
             }
             .sheet(isPresented: $showingAddSheet) {

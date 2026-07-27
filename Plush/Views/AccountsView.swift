@@ -59,6 +59,8 @@ struct AccountsView: View {
                     } label: {
                         Label("Add Account", systemImage: "plus")
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.appPrimary)
                 }
             }
             .sheet(isPresented: $showingAddSheet) {

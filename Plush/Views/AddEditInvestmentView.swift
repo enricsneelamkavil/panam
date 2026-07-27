@@ -63,10 +63,8 @@ struct AddEditInvestmentView: View {
 
                         Toggle("Autopay", isOn: $autopayEnabled)
 
-                        if !isEditing {
-                            TextField("Already Invested (before this)", value: $priorAmount, format: .number)
-                                .keyboardType(.decimalPad)
-                        }
+                        TextField("Already Invested (before this)", value: $priorAmount, format: .number)
+                            .keyboardType(.decimalPad)
                     }
                 } footer: {
                     if isEditing {
@@ -99,8 +97,9 @@ struct AddEditInvestmentView: View {
                     Button("Save") {
                         save()
                     }
-                    .disabled(!canSave)
+                    .buttonStyle(.borderedProminent)
                     .tint(.appPrimary)
+                    .disabled(!canSave)
                 }
             }
             .onAppear(perform: populateFromInvestment)
@@ -118,6 +117,7 @@ struct AddEditInvestmentView: View {
         isRecurring = investment.isRecurring
         cadence = investment.cadence ?? .monthly
         autopayEnabled = investment.autopayEnabled
+        priorAmount = investment.priorAmount
     }
 
     /// The preset category used for investment money movements.
@@ -137,6 +137,7 @@ struct AddEditInvestmentView: View {
             let wasRecurring = investment.isRecurring
             let originalAmount = investment.amount
             let originalCadence = investment.cadence
+            let originalDate = investment.date
 
             if !wasRecurring, let old = investment.linkedTransaction {
                 // Simplest safe approach: reverse and drop the old linked
@@ -156,8 +157,9 @@ struct AddEditInvestmentView: View {
             if wasRecurring {
                 investment.autopayEnabled = autopayEnabled
                 investment.cadence = cadence
+                investment.priorAmount = priorAmount
 
-                if amount != originalAmount || cadence != originalCadence {
+                if amount != originalAmount || cadence != originalCadence || date != originalDate {
                     InvestmentOccurrenceGenerator.regenerateFutureUncontributed(for: investment, context: modelContext)
                 }
             } else {

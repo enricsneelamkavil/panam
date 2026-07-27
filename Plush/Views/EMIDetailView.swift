@@ -55,7 +55,8 @@ struct EMIDetailView: View {
                     dueDate: installment.dueDate,
                     expectedAmount: installment.amount,
                     actualAmount: installment.amount,
-                    completedDate: installment.paidDate
+                    completedDate: installment.paidDate,
+                    onMarkUnpaid: { markUnpaid(installment) }
                 )
                 .presentationDetents([.medium])
             } else {
@@ -96,6 +97,16 @@ struct EMIDetailView: View {
         installment.linkedTransaction = transaction
         emi.account?.applyTransaction(amount: actual, type: .expense)
         MoneyEventSync.sync(paidEMIInstallment: installment, context: modelContext)
+    }
+
+    private func markUnpaid(_ installment: EMIInstallment) {
+        if let transaction = installment.linkedTransaction {
+            transaction.account?.reverseTransaction(amount: transaction.amount, type: transaction.type)
+            modelContext.delete(transaction)
+            installment.linkedTransaction = nil
+        }
+        installment.isPaid = false
+        installment.paidDate = nil
     }
 }
 

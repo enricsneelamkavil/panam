@@ -33,6 +33,8 @@ struct LoansView: View {
                 Button { showingAddSheet = true } label: {
                     Label("Add Loan", systemImage: "plus")
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(.appPrimary)
             }
         }
         .sheet(isPresented: $showingAddSheet) {
@@ -141,8 +143,9 @@ struct AddLoanView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
-                        .disabled(!canSave)
+                        .buttonStyle(.borderedProminent)
                         .tint(.appPrimary)
+                        .disabled(!canSave)
                 }
             }
         }

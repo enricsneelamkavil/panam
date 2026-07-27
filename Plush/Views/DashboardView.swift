@@ -6,6 +6,11 @@
 import SwiftUI
 import SwiftData
 
+// Content height (pre-padding) of the two-line summary cards (Accounts,
+// Recurring, Loans), applied to single-line cards (Upcoming Dues, Lending,
+// Monthly Replay) so all six render at the same total card height.
+fileprivate let twoLineCardContentHeight: CGFloat = 44
+
 // Shared card surface applied to every dashboard tile.
 extension View {
     func dashboardCard() -> some View {
@@ -26,7 +31,6 @@ struct DashboardView: View {
     @Query private var recurringPayments: [RecurringPayment]
     @Query private var loans: [Loan]
 
-    @State private var occurrenceToPay: RecurringOccurrence?
     @State private var showingChat = false
     @State private var showingSettings = false
     @State private var showingReorder = false
@@ -222,15 +226,6 @@ struct DashboardView: View {
                         Label("Settings", systemImage: "gearshape")
                     }
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    NavigationLink {
-                        DetailedDashboardView()
-                            .navigationTitle("Detailed")
-                            .navigationBarTitleDisplayMode(.inline)
-                    } label: {
-                        Label("Detailed View", systemImage: "chart.bar.xaxis")
-                    }
-                }
             }
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
@@ -242,16 +237,6 @@ struct DashboardView: View {
                 FinanceChatView()
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
-            }
-            .sheet(item: $occurrenceToPay) { occurrence in
-                PaymentConfirmationSheet(
-                    title: "Mark as Paid",
-                    dueDate: occurrence.dueDate,
-                    expectedAmount: occurrence.expectedAmount
-                ) { actual in
-                    occurrence.markPaid(actualAmount: actual, context: modelContext)
-                }
-                .presentationDetents([.medium])
             }
         }
     }
@@ -350,38 +335,31 @@ struct DashboardView: View {
     // MARK: - Card 3: Upcoming Dues
 
     private var upcomingDuesSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        NavigationLink {
+            UpcomingDuesListView()
+        } label: {
             HStack {
                 Text("Upcoming Dues")
                     .font(.headline)
+                    .foregroundStyle(.primary)
+
+                if upcomingDues.count > 0 {
+                    Text("\(upcomingDues.count)")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.white)
+                        .frame(minWidth: 20, minHeight: 20)
+                        .background(Color.appPrimary, in: Circle())
+                }
+
                 Spacer()
-                NavigationLink("See All") {
-                    UpcomingDuesListView()
-                }
-                .font(.subheadline)
-            }
 
-            if upcomingDues.isEmpty {
-                Text("Nothing due in the next 3 days.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(upcomingDues.prefix(5)) { occurrence in
-                    Button {
-                        occurrenceToPay = occurrence
-                    } label: {
-                        UpcomingDueRow(occurrence: occurrence)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                if upcomingDues.count > 5 {
-                    Text("+\(upcomingDues.count - 5) more")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
+            .frame(height: twoLineCardContentHeight)
         }
+        .buttonStyle(.plain)
         .dashboardCard()
     }
 
@@ -493,6 +471,7 @@ struct DashboardView: View {
                     .foregroundStyle(.tertiary)
             }
         }
+        .buttonStyle(.plain)
         .dashboardCard()
     }
 
@@ -511,7 +490,9 @@ struct DashboardView: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
+            .frame(height: twoLineCardContentHeight)
         }
+        .buttonStyle(.plain)
         .dashboardCard()
     }
 
@@ -540,6 +521,7 @@ struct DashboardView: View {
                     .foregroundStyle(.tertiary)
             }
         }
+        .buttonStyle(.plain)
         .dashboardCard()
     }
 
@@ -568,6 +550,7 @@ struct DashboardView: View {
                     .foregroundStyle(.tertiary)
             }
         }
+        .buttonStyle(.plain)
         .dashboardCard()
     }
 
@@ -586,7 +569,9 @@ struct DashboardView: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
+            .frame(height: twoLineCardContentHeight)
         }
+        .buttonStyle(.plain)
         .dashboardCard()
     }
 

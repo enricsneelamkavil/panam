@@ -30,9 +30,7 @@ struct RecurringDetailView: View {
                     Text(payment.expectedAmount, format: Self.currencyFormat)
                 }
                 if let category = payment.category {
-                    LabeledContent("Category") {
-                        Label(category.name, systemImage: category.icon)
-                    }
+                    LabeledContent("Category", value: category.name)
                 }
                 if let account = payment.account {
                     LabeledContent("Account", value: account.name)
@@ -78,7 +76,8 @@ struct RecurringDetailView: View {
                     dueDate: occurrence.dueDate,
                     expectedAmount: occurrence.expectedAmount,
                     actualAmount: occurrence.actualAmount,
-                    completedDate: occurrence.paidDate
+                    completedDate: occurrence.paidDate,
+                    onMarkUnpaid: { markUnpaid(occurrence) }
                 )
                 .presentationDetents([.medium])
             } else {
@@ -100,6 +99,17 @@ struct RecurringDetailView: View {
         case false: "Not necessary"
         case nil: "Yes"
         }
+    }
+
+    private func markUnpaid(_ occurrence: RecurringOccurrence) {
+        if let transaction = occurrence.linkedTransaction {
+            transaction.account?.reverseTransaction(amount: transaction.amount, type: transaction.type)
+            modelContext.delete(transaction)
+            occurrence.linkedTransaction = nil
+        }
+        occurrence.isPaid = false
+        occurrence.actualAmount = nil
+        occurrence.paidDate = nil
     }
 }
 

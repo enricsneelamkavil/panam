@@ -13,6 +13,7 @@ struct PersonDetailView: View {
 
     @State private var showingAddSheet = false
     @State private var showingSettleUp = false
+    @State private var entryToEdit: LendingEntry?
 
     private static let currencyFormat = FloatingPointFormatStyle<Double>.Currency
         .currency(code: "INR")
@@ -36,6 +37,7 @@ struct PersonDetailView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)
+                .listRowSeparator(.hidden)
 
                 if balance != 0 {
                     Button {
@@ -52,6 +54,10 @@ struct PersonDetailView: View {
             Section("History") {
                 ForEach(sortedEntries) { entry in
                     EntryRow(entry: entry)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            entryToEdit = entry
+                        }
                 }
                 .onDelete(perform: deleteEntries)
             }
@@ -65,6 +71,8 @@ struct PersonDetailView: View {
                 } label: {
                     Label("Add Entry", systemImage: "plus")
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(.appPrimary)
             }
         }
         .sheet(isPresented: $showingAddSheet) {
@@ -72,6 +80,9 @@ struct PersonDetailView: View {
         }
         .sheet(isPresented: $showingSettleUp) {
             SettleUpView(person: person)
+        }
+        .sheet(item: $entryToEdit) { entry in
+            AddLendingEntryView(person: person, entry: entry)
         }
     }
 

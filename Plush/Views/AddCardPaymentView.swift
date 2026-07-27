@@ -76,6 +76,8 @@ struct AddCardPaymentView: View {
                     Button("Save") {
                         save()
                     }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.appPrimary)
                     .disabled(!canSave)
                 }
             }

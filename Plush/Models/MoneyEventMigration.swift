@@ -102,4 +102,58 @@ enum MoneyEventMigration {
             print("[MoneyEventMigration] Save failed: \(error). Will retry on next launch.")
         }
     }
+
+    private static let sourceBackfillCompletionKey = "moneyEventSourceBackfillComplete"
+
+    /// Backfills `MoneyEvent.sourceTransaction` for events created before that
+    /// relationship existed. Matches each daily-cadence recurring/investment
+    /// occurrence's linked Transaction against a MoneyEvent with no source yet,
+    /// by exact note/amount/date — the same three fields `MoneyEventSync.makeEvent(from:)`
+    /// copies directly from the Transaction, so an exact match reliably identifies
+    /// the same record without needing a stored ID.
+    static func runSourceTransactionBackfillIfNeeded(context: ModelContext) {
+        guard !UserDefaults.standard.bool(forKey: sourceBackfillCompletionKey) else { return }
+
+        var linkedTransactions: [Transaction] = []
+
+        let recurringOccurrences = (try? context.fetch(FetchDescriptor<RecurringOccurrence>())) ?? []
+        for occurrence in recurringOccurrences {
+            guard occurrence.parent?.cadence == .daily,
+                  let transaction = occurrence.linkedTransaction
+            else { continue }
+            linkedTransactions.append(transaction)
+        }
+
+        let investmentOccurrences = (try? context.fetch(FetchDescriptor<InvestmentOccurrence>())) ?? []
+        for occurrence in investmentOccurrences {
+            guard occurrence.parent?.cadence == .daily,
+                  let transaction = occurrence.linkedTransaction
+            else { continue }
+            linkedTransactions.append(transaction)
+        }
+
+        let unlinkedEvents = (try? context.fetch(FetchDescriptor<MoneyEvent>(
+            predicate: #Predicate { $0.sourceTransaction == nil }
+        ))) ?? []
+
+        var backfilled = 0
+        for transaction in linkedTransactions {
+            guard let match = unlinkedEvents.first(where: {
+                $0.sourceTransaction == nil &&
+                $0.note == transaction.note &&
+                $0.amount == transaction.amount &&
+                $0.date == transaction.date
+            }) else { continue }
+            match.sourceTransaction = transaction
+            backfilled += 1
+        }
+
+        do {
+            try context.save()
+            UserDefaults.standard.set(true, forKey: sourceBackfillCompletionKey)
+            print("[MoneyEventMigration] Source-transaction backfill complete ✓ — linked \(backfilled) of \(linkedTransactions.count) daily-cadence occurrences")
+        } catch {
+            print("[MoneyEventMigration] Source-transaction backfill save failed: \(error). Will retry on next launch.")
+        }
+    }
 }
