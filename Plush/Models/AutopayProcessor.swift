@@ -40,6 +40,16 @@ enum AutopayProcessor {
         for occurrence in dueOccurrences where occurrence.parent?.autopayEnabled == true {
             occurrence.markPaid(actualAmount: occurrence.expectedAmount, context: context)
         }
+
+        let investmentDescriptor = FetchDescriptor<InvestmentOccurrence>(
+            predicate: #Predicate { !$0.isContributed && $0.dueDate <= now }
+        )
+        guard let dueInvestmentOccurrences = try? context.fetch(investmentDescriptor) else { return }
+
+        for occurrence in dueInvestmentOccurrences where occurrence.parent?.autopayEnabled == true {
+            occurrence.markContributed(actualAmount: occurrence.expectedAmount, context: context)
+        }
+
         try? context.save()
     }
 }

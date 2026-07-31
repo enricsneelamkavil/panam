@@ -25,38 +25,36 @@ struct PaymentSummaryView: View {
     var body: some View {
         NavigationStack {
             Form {
-                LabeledContent("Due Date") {
-                    Text(dueDate, format: .dateTime.day().month(.abbreviated).year())
-                }
-                LabeledContent("Expected") {
-                    Text(expectedAmount,
-                         format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
-                }
-                if let actualAmount {
-                    LabeledContent(amountLabel) {
-                        Text(actualAmount,
-                             format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
-                            .foregroundStyle(.green)
+                Section {
+                    LabeledContent("Due Date") {
+                        Text(dueDate, format: .dateTime.day().month(.abbreviated).year())
                     }
-                }
-                if let completedDate {
-                    LabeledContent(dateLabel) {
-                        Text(completedDate, format: .dateTime.day().month(.abbreviated).year())
+                    LabeledContent("Expected") {
+                        Text(expectedAmount,
+                             format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+                    }
+                    if let actualAmount {
+                        LabeledContent(amountLabel) {
+                            Text(actualAmount,
+                                 format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+                                .foregroundStyle(.green)
+                        }
+                    }
+                    if let completedDate {
+                        LabeledContent(dateLabel) {
+                            Text(completedDate, format: .dateTime.day().month(.abbreviated).year())
+                        }
                     }
                 }
 
                 if let onMarkUnpaid {
-                    Button(role: .destructive) {
-                        onMarkUnpaid()
-                        dismiss()
-                    } label: {
-                        Text("Mark as Unpaid")
-                            .frame(maxWidth: .infinity)
+                    Section {
+                        Button("Mark as Unpaid", role: .destructive) {
+                            onMarkUnpaid()
+                            dismiss()
+                        }
+                        .foregroundStyle(.red)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .listRowBackground(Color.clear)
-                    .listRowInsets(EdgeInsets())
                 }
             }
             .navigationTitle(title)
