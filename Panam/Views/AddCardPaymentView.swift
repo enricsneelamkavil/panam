@@ -16,9 +16,12 @@ struct AddCardPaymentView: View {
     let card: Account
 
     @Query(sort: \Account.name) private var accounts: [Account]
+    @Query(sort: \Category.name) private var categories: [Category]
 
     @State private var amount: Double?
     @State private var feeAmount: Double?
+    @State private var extraUnloggedAmount: Double?
+    @State private var extraAmountCategory: Category?
     @State private var sourceAccount: Account?
     @State private var date: Date = .now
     @State private var note = ""
@@ -28,8 +31,11 @@ struct AddCardPaymentView: View {
     }
 
     private var canSave: Bool {
-        guard let amount else { return false }
-        return amount > 0
+        guard let amount, amount > 0 else { return false }
+        if type == .billPayment, let extraUnloggedAmount, extraUnloggedAmount >= amount {
+            return false
+        }
+        return true
     }
 
     var body: some View {
@@ -47,6 +53,25 @@ struct AddCardPaymentView: View {
                     if type == .cashAdvance {
                         TextField("Fee (optional)", value: $feeAmount, format: .number)
                             .keyboardType(.decimalPad)
+                    }
+
+                    if type == .billPayment {
+                        TextField("Extra Amount Not Already Logged", value: $extraUnloggedAmount, format: .number)
+                            .keyboardType(.decimalPad)
+
+                        if let extraUnloggedAmount, extraUnloggedAmount > 0 {
+                            Picker("Category", selection: $extraAmountCategory) {
+                                Text("Uncategorized").tag(nil as Category?)
+                                ForEach(categories) { category in
+                                    Label(category.name, systemImage: category.icon)
+                                        .tag(category as Category?)
+                                }
+                            }
+                        }
+                    }
+                } footer: {
+                    if type == .billPayment {
+                        Text("If you're paying more than what's already tracked as purchases on this card — interest, fees, or a purchase you didn't log separately — enter that extra amount here. It'll count as new spend; the rest just settles what's already been counted.")
                     }
                 }
 
@@ -90,6 +115,8 @@ struct AddCardPaymentView: View {
             type: type,
             amount: amount,
             feeAmount: type == .cashAdvance ? feeAmount : nil,
+            extraUnloggedAmount: type == .billPayment ? (extraUnloggedAmount ?? 0) : 0,
+            extraAmountCategory: type == .billPayment ? extraAmountCategory : nil,
             date: date,
             note: note,
             card: card,

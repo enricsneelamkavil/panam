@@ -15,6 +15,7 @@ struct AddEditRecurringPaymentView: View {
 
     @Query(sort: \Account.name) private var accounts: [Account]
     @Query(sort: \Category.name) private var categories: [Category]
+    @Query(sort: \Person.name) private var people: [Person]
 
     @State private var name = ""
     @State private var expectedAmount: Double?
@@ -25,11 +26,17 @@ struct AddEditRecurringPaymentView: View {
     @State private var isSubscription = false
     @State private var isNecessary: Bool?
     @State private var isActive = true
+    @State private var autopayEnabled = false
+    @State private var hasPerson = false
+    @State private var selectedPerson: Person?
+    @State private var newPersonName = ""
 
     private var isEditing: Bool { payment != nil }
 
     private var canSave: Bool {
         guard let expectedAmount, expectedAmount > 0 else { return false }
+        if hasPerson && selectedPerson == nil
+            && newPersonName.trimmingCharacters(in: .whitespaces).isEmpty { return false }
         return !name.trimmingCharacters(in: .whitespaces).isEmpty
             && selectedCategory != nil
             && selectedAccount != nil
@@ -83,6 +90,27 @@ struct AddEditRecurringPaymentView: View {
                     }
 
                     Toggle("Active", isOn: $isActive)
+
+                    Toggle("Autopay", isOn: $autopayEnabled)
+                }
+
+                Section {
+                    Toggle("Linked to a Person", isOn: $hasPerson.animation())
+
+                    if hasPerson {
+                        Picker("Person", selection: $selectedPerson) {
+                            Text("New Person").tag(nil as Person?)
+                            ForEach(people) { person in
+                                Text(person.name).tag(person as Person?)
+                            }
+                        }
+
+                        if selectedPerson == nil {
+                            TextField("Name", text: $newPersonName)
+                        }
+                    }
+                } footer: {
+                    Text("For payments made to someone, like a chit fund. This is a reference link only — it doesn't create or affect any lending balance.")
                 }
             }
             .navigationTitle(isEditing ? "Edit Recurring" : "New Recurring")
@@ -117,6 +145,24 @@ struct AddEditRecurringPaymentView: View {
         isSubscription = payment.isSubscription
         isNecessary = payment.isNecessary
         isActive = payment.isActive
+        autopayEnabled = payment.autopayEnabled
+        if let person = payment.person {
+            hasPerson = true
+            selectedPerson = person
+        }
+    }
+
+    /// Resolves the person section's state into a Person, creating and
+    /// inserting a new one if the user typed a fresh name. Returns nil when
+    /// the payment isn't linked to anyone.
+    private func resolvePerson() -> Person? {
+        guard hasPerson else { return nil }
+        if let selectedPerson { return selectedPerson }
+        let trimmedName = newPersonName.trimmingCharacters(in: .whitespaces)
+        guard !trimmedName.isEmpty else { return nil }
+        let newPerson = Person(name: trimmedName)
+        modelContext.insert(newPerson)
+        return newPerson
     }
 
     private func save() {
@@ -141,6 +187,8 @@ struct AddEditRecurringPaymentView: View {
             payment.isSubscription = isSubscription
             payment.isNecessary = necessary
             payment.isActive = isActive
+            payment.autopayEnabled = autopayEnabled
+            payment.person = resolvePerson()
 
             if needsRegeneration {
                 RecurringOccurrenceGenerator.regenerateFutureUnpaid(for: payment, context: modelContext)
@@ -155,8 +203,10 @@ struct AddEditRecurringPaymentView: View {
                 account: selectedAccount,
                 isSubscription: isSubscription,
                 isNecessary: necessary,
-                isActive: isActive
+                isActive: isActive,
+                person: resolvePerson()
             )
+            newPayment.autopayEnabled = autopayEnabled
             modelContext.insert(newPayment)
             RecurringOccurrenceGenerator.generateOccurrences(for: newPayment, context: modelContext)
         }
@@ -168,7 +218,8 @@ struct AddEditRecurringPaymentView: View {
     AddEditRecurringPaymentView()
         .modelContainer(
             for: [Account.self, Category.self, Transaction.self,
-                  RecurringPayment.self, RecurringOccurrence.self],
+                  RecurringPayment.self, RecurringOccurrence.self,
+                  Person.self, LendingEntry.self],
             inMemory: true
         )
 }

@@ -124,16 +124,9 @@ struct TransactionsView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink {
-                        MerchantsView()
+                        TransactionToolsMenuView()
                     } label: {
-                        Label("Merchants", systemImage: "storefront")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    NavigationLink {
-                        CategoriesView()
-                    } label: {
-                        Label("Manage Categories", systemImage: "tag")
+                        Label("Categories, Merchants & UPI Apps", systemImage: "list.bullet.rectangle")
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -185,6 +178,34 @@ struct TransactionsView: View {
             }
             modelContext.delete(transaction)
         }
+    }
+}
+
+// MARK: - Categories / Merchants / UPI Apps entry point
+
+/// Intermediate picker reached from the toolbar's single combined icon —
+/// each row pushes to its existing, unchanged destination view.
+private struct TransactionToolsMenuView: View {
+    var body: some View {
+        List {
+            NavigationLink {
+                CategoriesView()
+            } label: {
+                Label("Categories", systemImage: "tag")
+            }
+            NavigationLink {
+                MerchantsView()
+            } label: {
+                Label("Merchants", systemImage: "storefront")
+            }
+            NavigationLink {
+                UPIAppsView()
+            } label: {
+                Label("UPI Apps", systemImage: "qrcode")
+            }
+        }
+        .navigationTitle("Categories & More")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

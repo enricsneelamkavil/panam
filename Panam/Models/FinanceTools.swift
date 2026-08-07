@@ -80,7 +80,7 @@ nonisolated struct SpendSummaryTool: Tool {
             .filter { $0.type.isIncomeLike && $0.type != .refund && !$0.isLendingRepayment }
             .reduce(0) { $0 + $1.amount }
         let spent = relevant
-            .filter { $0.type.isExpenseLike && !$0.isLendingRepayment }
+            .filter { $0.type.isExpenseLike && !$0.isExcludedFromFlow }
             .reduce(0) { $0 + $1.amount }
         let refunded = relevant.filter { $0.type == .refund }.reduce(0) { $0 + $1.amount }
         let expense = spent - refunded

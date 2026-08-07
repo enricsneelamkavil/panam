@@ -11,6 +11,8 @@ struct PersonDetailView: View {
 
     let person: Person
 
+    @Query(sort: \RecurringPayment.name) private var allRecurringPayments: [RecurringPayment]
+
     @State private var showingAddSheet = false
     @State private var showingSettleUp = false
     @State private var entryToEdit: LendingEntry?
@@ -21,6 +23,13 @@ struct PersonDetailView: View {
 
     private var sortedEntries: [LendingEntry] {
         person.entries.sorted { $0.date > $1.date }
+    }
+
+    /// Recurring payments referencing this person (e.g. chit funds). Reference
+    /// only — distinct from the LendingEntry history above and doesn't affect
+    /// this person's balance.
+    private var linkedRecurringPayments: [RecurringPayment] {
+        allRecurringPayments.filter { $0.person === person }
     }
 
     var body: some View {
@@ -60,6 +69,22 @@ struct PersonDetailView: View {
                         }
                 }
                 .onDelete(perform: deleteEntries)
+            }
+
+            if !linkedRecurringPayments.isEmpty {
+                Section {
+                    ForEach(linkedRecurringPayments) { payment in
+                        NavigationLink {
+                            RecurringDetailView(payment: payment)
+                        } label: {
+                            LinkedRecurringPaymentRow(payment: payment)
+                        }
+                    }
+                } header: {
+                    Text("Recurring Payments")
+                } footer: {
+                    Text("Reference only — these don't affect the balance above.")
+                }
             }
         }
         .navigationTitle(person.name)
@@ -120,6 +145,25 @@ private struct EntryRow: View {
             Text(entry.amount, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
                 .font(.body.monospacedDigit())
                 .foregroundStyle(entry.kind.ledgerSign > 0 ? .green : .red)
+        }
+    }
+}
+
+private struct LinkedRecurringPaymentRow: View {
+    let payment: RecurringPayment
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(payment.name)
+                Text(payment.cadence.displayName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(payment.expectedAmount, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+                .font(.body.monospacedDigit())
+                .foregroundStyle(.secondary)
         }
     }
 }

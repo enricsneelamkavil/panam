@@ -16,12 +16,18 @@ final class RecurringPayment {
     var isIncome: Bool = false         // true = expected incoming money (e.g. salary)
     var cancelledDate: Date? = nil     // set when isActive flipped to false via Cancel action
 
+    /// Optional person this payment is made to (e.g. a chit fund organizer).
+    /// Reference only — distinct from LendingEntry and does not affect any
+    /// Person balance.
+    var person: Person?
+
     @Relationship(deleteRule: .cascade, inverse: \RecurringOccurrence.parent)
     var occurrences: [RecurringOccurrence] = []
 
     init(name: String, expectedAmount: Double, cadence: Cadence, startDate: Date,
          category: Category? = nil, account: Account? = nil,
-         isSubscription: Bool = false, isNecessary: Bool? = nil, isActive: Bool = true) {
+         isSubscription: Bool = false, isNecessary: Bool? = nil, isActive: Bool = true,
+         person: Person? = nil) {
         self.name = name
         self.expectedAmount = expectedAmount
         self.cadence = cadence
@@ -31,6 +37,7 @@ final class RecurringPayment {
         self.isSubscription = isSubscription
         self.isNecessary = isNecessary
         self.isActive = isActive
+        self.person = person
     }
 }
 

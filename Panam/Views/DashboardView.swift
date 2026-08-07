@@ -11,6 +11,21 @@ import SwiftData
 // Monthly Replay) so all six render at the same total card height.
 fileprivate let twoLineCardContentHeight: CGFloat = 44
 
+/// Shared by the Upcoming Dues card and its "See All" list: unpaid,
+/// reminder-eligible occurrences that are overdue or due within the next 7
+/// days. No lower bound — an overdue dueDate is always <= the window end.
+fileprivate func isOverdueOrDueSoon(_ occurrence: RecurringOccurrence) -> Bool {
+    guard !occurrence.isPaid,
+          let cadence = occurrence.parent?.cadence,
+          cadence.reminderEligible
+    else { return false }
+    let calendar = Calendar.current
+    let todayStart = calendar.startOfDay(for: .now)
+    guard let windowEnd = calendar.date(byAdding: .day, value: 7, to: todayStart)
+    else { return false }
+    return calendar.startOfDay(for: occurrence.dueDate) <= windowEnd
+}
+
 // Shared card surface applied to every dashboard tile.
 extension View {
     func dashboardCard() -> some View {
@@ -107,14 +122,16 @@ struct DashboardView: View {
     /// .expense + .taxAndFee, netted against refunds.
     private var expenseTotal: Double {
         let spent = periodTransactions
-            .filter { $0.type.isExpenseLike && !$0.isLendingRepayment }
+            .filter { $0.type.isExpenseLike && !$0.isExcludedFromFlow }
             .reduce(0) { $0 + $1.amount }
         let refunded = periodTransactions.filter { $0.type == .refund }.reduce(0) { $0 + $1.amount }
         return spent - refunded
     }
 
     private var categoryTotals: [(category: Category, total: Double)] {
-        let expenses = periodTransactions.filter { $0.type == .expense && $0.category != nil }
+        let expenses = periodTransactions.filter {
+            $0.type == .expense && $0.category != nil && !$0.isExcludedFromFlow
+        }
         let groups = Dictionary(grouping: expenses) { $0.category! }
         return groups
             .map { (category: $0.key, total: $0.value.reduce(0) { $0 + $1.amount }) }
@@ -124,18 +141,7 @@ struct DashboardView: View {
     // MARK: - Dues / lending / balances
 
     private var upcomingDues: [RecurringOccurrence] {
-        let calendar = Calendar.current
-        let todayStart = calendar.startOfDay(for: .now)
-        guard let windowEnd = calendar.date(byAdding: .day, value: 3, to: todayStart)
-        else { return [] }
-
-        return occurrences.filter { occurrence in
-            guard !occurrence.isPaid,
-                  let cadence = occurrence.parent?.cadence,
-                  cadence.reminderEligible
-            else { return false }
-            return calendar.startOfDay(for: occurrence.dueDate) <= windowEnd
-        }
+        occurrences.filter(isOverdueOrDueSoon)
     }
 
     private var totalBalance: Double {
@@ -166,12 +172,14 @@ struct DashboardView: View {
     // MARK: - Section ordering
 
     // "netWorth" removed — net worth is now shown directly in the pinned balance card.
+    // "spendBar" removed — merged back into "topCategories" (bar + ranked list, one card).
     private static let defaultSectionOrder = [
-        "summary", "upcomingDues", "spendBar", "topCategories", "accounts", "lending", "recurring", "loans",
+        "summary", "upcomingDues", "topCategories", "accounts", "lending", "recurring", "loans",
         "monthlyReplay",
     ]
 
     @AppStorage("dashboardSectionOrder") private var sectionOrderJSON = ""
+    @AppStorage("dashboardHiddenSections") private var hiddenSectionsJSON = ""
 
     private var orderedSectionIDs: [String] {
         let stored = (try? JSONDecoder().decode([String].self, from: Data(sectionOrderJSON.utf8))) ?? []
@@ -183,6 +191,15 @@ struct DashboardView: View {
         return order
     }
 
+    private var hiddenSectionIDs: Set<String> {
+        (try? JSONDecoder().decode(Set<String>.self, from: Data(hiddenSectionsJSON.utf8))) ?? []
+    }
+
+    /// Ordered section ids with any user-hidden sections filtered out.
+    private var sectionsContent: [String] {
+        orderedSectionIDs.filter { !hiddenSectionIDs.contains($0) }
+    }
+
     // MARK: - Body
 
     var body: some View {
@@ -191,7 +208,7 @@ struct DashboardView: View {
                 VStack(spacing: 16) {
                     balanceCard
 
-                    ForEach(orderedSectionIDs, id: \.self) { id in
+                    ForEach(sectionsContent, id: \.self) { id in
                         sectionView(for: id)
                     }
                 }
@@ -281,7 +298,6 @@ struct DashboardView: View {
         switch id {
         case "summary":      summarySection
         case "upcomingDues": upcomingDuesSection
-        case "spendBar":     spendBarSection
         case "topCategories": topCategoriesSection
         case "accounts":     accountsSection
         case "lending":      lendingSection
@@ -363,42 +379,70 @@ struct DashboardView: View {
         .dashboardCard()
     }
 
-    // MARK: - Card 4: Spend Bar
+    // MARK: - Card 4: Spending (bar + ranked category list, one card)
 
     fileprivate static let barPalette: [Color] = [.blue, .green, .orange, .purple, .pink]
 
+    /// Color for a category's dot/segment across Top Categories, the Spend
+    /// Bar, and the full breakdown. Uses the category's custom colorHex when
+    /// set; otherwise picks a stable palette color from a hash of the
+    /// category's name, so the same category always renders the same color
+    /// regardless of its current spend-rank — which shifts day to day as
+    /// transactions change, unlike a plain index-into-palette lookup.
+    static func color(for category: Category) -> Color {
+        if let hex = category.colorHex, let custom = Color(hex: hex) {
+            return custom
+        }
+        return barPalette[stableHash(category.name) % barPalette.count]
+    }
+
+    /// djb2 string hash — deterministic across app launches/processes,
+    /// unlike Swift's randomized String.hashValue.
+    private static func stableHash(_ string: String) -> Int {
+        var hash = 5381
+        for byte in string.utf8 {
+            hash = ((hash << 5) &+ hash) &+ Int(byte)
+        }
+        return abs(hash)
+    }
+
     private var spendSegments: [(id: String, color: Color, share: Double)] {
         guard expenseTotal > 0 else { return [] }
+
+        // Shares are computed against the sum of what's actually displayed
+        // (top categories + Other), not against expenseTotal directly — that
+        // keeps the bar filled edge-to-edge even when categorized spend
+        // over- or under-shoots expenseTotal (uncategorized amounts, tax/fee
+        // transactions, refund netting, etc.) instead of silently dropping
+        // the remainder below a rounding threshold.
+        let topCategories = Array(categoryTotals.prefix(5))
+        let topTotal = topCategories.reduce(0) { $0 + $1.total }
+        let otherTotal = max(expenseTotal - topTotal, 0)
+        let displayedTotal = topTotal + otherTotal
+        guard displayedTotal > 0 else { return [] }
+
         var segments: [(id: String, color: Color, share: Double)] = []
-        for (index, entry) in categoryTotals.prefix(5).enumerated() {
+        for entry in topCategories {
             segments.append((
                 id: entry.category.name,
-                color: Self.barPalette[index % Self.barPalette.count],
-                share: entry.total / expenseTotal
+                color: Self.color(for: entry.category),
+                share: entry.total / displayedTotal
             ))
         }
-        let covered = segments.reduce(0) { $0 + $1.share }
-        if covered < 0.999 {
-            segments.append((id: "other", color: .gray, share: 1 - covered))
+        if otherTotal > 0 {
+            segments.append((id: "other", color: .gray, share: otherTotal / displayedTotal))
         }
         return segments
     }
 
-    private var spendBarSection: some View {
+    /// Bar (larger, edge-to-edge, no legend) + ranked category list below it,
+    /// in a single card — the original combined layout, reunited.
+    private var topCategoriesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Spending")
-                    .font(.headline)
-                Spacer()
-                MaskableCurrencyText(amount: expenseTotal)
-                    .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-
             if spendSegments.isEmpty {
                 Capsule()
                     .fill(Color.secondary.opacity(0.15))
-                    .frame(height: 20)
+                    .frame(height: 28)
             } else {
                 GeometryReader { geometry in
                     HStack(spacing: 2) {
@@ -409,17 +453,10 @@ struct DashboardView: View {
                         }
                     }
                 }
-                .frame(height: 20)
+                .frame(height: 28)
                 .clipShape(Capsule())
             }
-        }
-        .dashboardCard()
-    }
 
-    // MARK: - Card 5: Top Categories
-
-    private var topCategoriesSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Top Categories")
                     .font(.headline)
@@ -437,12 +474,12 @@ struct DashboardView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(Array(categoryTotals.prefix(5).enumerated()), id: \.element.category.persistentModelID) { index, entry in
+                ForEach(categoryTotals.prefix(5), id: \.category.persistentModelID) { entry in
                     CategoryTotalRow(
                         category: entry.category,
                         total: entry.total,
                         share: entry.total / (categoryTotals.first?.total ?? 1),
-                        color: Self.barPalette[index % Self.barPalette.count]
+                        color: Self.color(for: entry.category)
                     )
                 }
             }
@@ -614,12 +651,12 @@ private struct CategoryBreakdownView: View {
 
     var body: some View {
         List {
-            ForEach(Array(totals.enumerated()), id: \.element.category.persistentModelID) { index, entry in
+            ForEach(totals, id: \.category.persistentModelID) { entry in
                 CategoryTotalRow(
                     category: entry.category,
                     total: entry.total,
                     share: entry.total / (totals.first?.total ?? 1),
-                    color: DashboardView.barPalette[index % DashboardView.barPalette.count]
+                    color: DashboardView.color(for: entry.category)
                 )
             }
         }
@@ -628,16 +665,14 @@ private struct CategoryBreakdownView: View {
     }
 }
 
-/// All unpaid/overdue recurring occurrences, pushed from Upcoming Dues "See All".
+/// Overdue + due-within-7-days recurring occurrences, pushed from Upcoming Dues "See All".
 private struct UpcomingDuesListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \RecurringOccurrence.dueDate) private var occurrences: [RecurringOccurrence]
     @State private var occurrenceToPay: RecurringOccurrence?
 
     private var unpaidOccurrences: [RecurringOccurrence] {
-        occurrences.filter {
-            !$0.isPaid && ($0.parent?.cadence.reminderEligible ?? false)
-        }
+        occurrences.filter(isOverdueOrDueSoon)
     }
 
     var body: some View {

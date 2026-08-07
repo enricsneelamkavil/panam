@@ -20,6 +20,10 @@ final class Transaction {
     /// True for the Transaction leg of a lending settlement (.repaymentReceived/.repaymentMade) —
     /// a debt settling, not real income/spend. Not set for .lent/.borrowed, which are real money movements.
     var isLendingRepayment: Bool = false
+    /// True for the source-account transaction created by CardPayment.record(context:) for a
+    /// Bill Payment or Cash Advance — settling card debt already counted as spend at purchase
+    /// time, not new spending. Not set on the separate fee transaction, which is a genuine new cost.
+    var isCardPaymentSettlement: Bool = false
 
     @Relationship(deleteRule: .cascade, inverse: \SplitAllocation.transaction)
     var splitAllocations: [SplitAllocation] = []
@@ -46,7 +50,7 @@ extension Transaction {
     /// the type-level exclusions (transfers, adjustments) plus lending repayments,
     /// which settle a debt rather than representing real income/spend.
     nonisolated var isExcludedFromFlow: Bool {
-        type.isExcludedFromFlow || isLendingRepayment
+        type.isExcludedFromFlow || isLendingRepayment || isCardPaymentSettlement
     }
 }
 

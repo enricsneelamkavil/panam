@@ -35,6 +35,9 @@ struct RecurringDetailView: View {
                 if let account = payment.account {
                     LabeledContent("Account", value: account.name)
                 }
+                if let person = payment.person {
+                    LabeledContent("Person", value: person.name)
+                }
                 if payment.isSubscription {
                     LabeledContent("Subscription") {
                         Text(subscriptionLabel)

@@ -17,27 +17,43 @@ struct CategoriesView: View {
     @State private var categoryToEdit: Category?
     @State private var categoryPendingDeletion: Category?
 
+    private static let otherGroupName = "Other"
+
+    private struct CategoryGroup: Identifiable {
+        let name: String
+        let categories: [Category]
+        var id: String { name }
+    }
+
+    /// Categories grouped by groupName for display — alphabetical group
+    /// headers, ungrouped categories collected under "Other" at the bottom,
+    /// alphabetical by name within each group. Purely a display/sort
+    /// grouping; doesn't affect any aggregation logic elsewhere.
+    private var groupedCategories: [CategoryGroup] {
+        var groups: [String: [Category]] = [:]
+        for category in categories {
+            let trimmed = category.groupName?.trimmingCharacters(in: .whitespaces) ?? ""
+            let groupName = trimmed.isEmpty ? Self.otherGroupName : trimmed
+            groups[groupName, default: []].append(category)
+        }
+
+        var namedGroupNames = groups.keys.filter { $0 != Self.otherGroupName }
+        namedGroupNames.sort()
+
+        var result: [CategoryGroup] = []
+        for name in namedGroupNames {
+            let sorted = (groups[name] ?? []).sorted { $0.name < $1.name }
+            result.append(CategoryGroup(name: name, categories: sorted))
+        }
+        if let other = groups[Self.otherGroupName], !other.isEmpty {
+            result.append(CategoryGroup(name: Self.otherGroupName, categories: other.sorted { $0.name < $1.name }))
+        }
+        return result
+    }
+
     var body: some View {
         List {
-            ForEach(categories) { category in
-                HStack {
-                    Image(systemName: category.icon)
-                        .foregroundStyle(.tint)
-                        .frame(width: 28)
-                    Text(category.name)
-                    Spacer()
-                    if category.isPreset {
-                        Text("Preset")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    categoryToEdit = category
-                }
-            }
-            .onDelete(perform: deleteCategories)
+            categoryGroupSections
         }
         .navigationTitle("Categories")
         .toolbar {
@@ -74,18 +90,58 @@ struct CategoriesView: View {
         }
     }
 
+    @ViewBuilder
+    private var categoryGroupSections: some View {
+        ForEach(groupedCategories) { group in
+            Section(group.name) {
+                ForEach(group.categories) { category in
+                    CategoryRow(category: category)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            categoryToEdit = category
+                        }
+                }
+                .onDelete { offsets in
+                    deleteCategories(at: offsets, from: group.categories)
+                }
+            }
+        }
+    }
+
     private func usageCount(of category: Category) -> Int {
         transactions.filter { $0.category === category }.count
     }
 
-    private func deleteCategories(at offsets: IndexSet) {
+    private func deleteCategories(at offsets: IndexSet, from groupCategories: [Category]) {
         for index in offsets {
-            let category = categories[index]
+            let category = groupCategories[index]
             if usageCount(of: category) == 0 {
                 modelContext.delete(category)
             } else {
                 // In use — confirm before leaving items uncategorized.
                 categoryPendingDeletion = category
+            }
+        }
+    }
+}
+
+private struct CategoryRow: View {
+    let category: Category
+
+    var body: some View {
+        HStack {
+            Circle()
+                .fill(DashboardView.color(for: category))
+                .frame(width: 10, height: 10)
+            Image(systemName: category.icon)
+                .foregroundStyle(.tint)
+                .frame(width: 28)
+            Text(category.name)
+            Spacer()
+            if category.isPreset {
+                Text("Preset")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -103,6 +159,9 @@ private struct AddEditCategoryView: View {
     @State private var name = ""
     @State private var icon = "circle.fill"
     @State private var showingIconPicker = false
+    @State private var groupName = ""
+    @State private var useCustomColor = false
+    @State private var selectedColor: Color = .blue
 
     private var isEditing: Bool { category != nil }
 
@@ -144,6 +203,21 @@ private struct AddEditCategoryView: View {
                     }
                     .buttonStyle(.plain)
                 }
+
+                Section {
+                    Toggle("Custom Color", isOn: $useCustomColor.animation())
+                    if useCustomColor {
+                        ColorPicker("Category Color", selection: $selectedColor, supportsOpacity: false)
+                    }
+                } footer: {
+                    Text("Used for this category's dot in Top Categories and its segment in the Spend Bar. Leave off to use the automatically assigned color.")
+                }
+
+                Section {
+                    TextField("Group (optional)", text: $groupName)
+                } footer: {
+                    Text("Categories are grouped and sorted by this in the Categories list. Leave blank to show under \"Other.\"")
+                }
             }
             .navigationTitle(isEditing ? "Edit Category" : "New Category")
             .navigationBarTitleDisplayMode(.inline)
@@ -169,6 +243,11 @@ private struct AddEditCategoryView: View {
                 guard let category else { return }
                 name = category.name
                 icon = category.icon
+                groupName = category.groupName ?? ""
+                if let hex = category.colorHex, let customColor = Color(hex: hex) {
+                    useCustomColor = true
+                    selectedColor = customColor
+                }
             }
         }
     }
@@ -176,12 +255,21 @@ private struct AddEditCategoryView: View {
     private func save() {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         guard !trimmedName.isEmpty else { return }
+        let trimmedGroup = groupName.trimmingCharacters(in: .whitespaces)
+        let hex = useCustomColor ? selectedColor.hexString : nil
 
         if let category {
             category.name = trimmedName
+            category.groupName = trimmedGroup.isEmpty ? nil : trimmedGroup
+            category.colorHex = hex
             category.icon = icon
         } else {
-            modelContext.insert(Category(name: trimmedName, icon: icon))
+            modelContext.insert(Category(
+                name: trimmedName,
+                icon: icon,
+                groupName: trimmedGroup.isEmpty ? nil : trimmedGroup,
+                colorHex: hex
+            ))
         }
         dismiss()
     }
