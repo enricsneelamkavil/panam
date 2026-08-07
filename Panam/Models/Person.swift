@@ -3,6 +3,8 @@ import SwiftData
 
 @Model
 final class Person {
+    /// See Account.backupID.
+    var backupID: UUID = UUID()
     var name: String
     var createdAt: Date
 

@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		94483E4C00D7689DD2632053 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 46FE1B355E23D4E1AE53B37F /* GoogleSignIn */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		55894EC9300B8179007C571B /* Panam.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Panam.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -36,6 +40,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				94483E4C00D7689DD2632053 /* GoogleSignIn in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,6 +83,7 @@
 			);
 			name = Panam;
 			packageProductDependencies = (
+				46FE1B355E23D4E1AE53B37F /* GoogleSignIn */,
 			);
 			productName = Panam;
 			productReference = 55894EC9300B8179007C571B /* Panam.app */;
@@ -107,6 +113,9 @@
 			);
 			mainGroup = 55894EC0300B8179007C571B;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				C486B895ADE0BD277BEC1D16 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 55894ECA300B8179007C571B /* Products */;
 			projectDirPath = "";
@@ -351,6 +360,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		C486B895ADE0BD277BEC1D16 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.2.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		46FE1B355E23D4E1AE53B37F /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C486B895ADE0BD277BEC1D16 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 55894EC1300B8179007C571B /* Project object */;
 }

@@ -6,6 +6,7 @@
 
 import SwiftUI
 import SwiftData
+import GoogleSignIn
 
 @main
 struct PanamApp: App {
@@ -13,7 +14,18 @@ struct PanamApp: App {
 
     @State private var authState = AuthState()
     @State private var privacyState = PrivacyState()
+    @State private var gmailAuth = GmailAuthManager()
     @State private var backgroundedAt: Date?
+
+    /// Gates the one-time Google sign-in screen. Seeded from the Keychain-
+    /// persisted `hasCompletedGoogleLogin` at launch (via the explicit
+    /// `_needsGoogleSignIn = State(initialValue:)` form — plain `self.x = `
+    /// assignment inside `init()` is not a reliable way to set a @State
+    /// property's actual initial value); flipped locally afterward (not
+    /// re-read from Keychain) the moment sign-in succeeds so the UI
+    /// proceeds immediately, in the same session — Keychain-backed computed
+    /// properties aren't tracked by @Observable, only stored ones.
+    @State private var needsGoogleSignIn: Bool
 
     @AppStorage(AppSettings.biometricLockEnabledKey)
     private var biometricLockEnabled = AppSettings.biometricLockEnabledDefault
@@ -50,12 +62,16 @@ struct PanamApp: App {
     }()
 
     init() {
+        GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: GmailAuthManager.clientID)
+        _needsGoogleSignIn = State(initialValue: !AuthState().hasCompletedGoogleLogin)
         CategorySeeder.seedIfNeeded(sharedModelContainer.mainContext)
         MoneyEventMigration.runOneTimeMigration(context: sharedModelContainer.mainContext)
         if ProcessInfo.processInfo.arguments.contains("--seed-backfill-test") {
             Self.seedBackfillTestScenario(sharedModelContainer.mainContext)
         }
         MoneyEventMigration.runSourceTransactionBackfillIfNeeded(context: sharedModelContainer.mainContext)
+        BackupIDBackfill.runIfNeeded(context: sharedModelContainer.mainContext)
+        TransactionOrphanCleanup.runIfNeeded(context: sharedModelContainer.mainContext)
         AutopayProcessor.processAutopays(context: sharedModelContainer.mainContext)
     }
 
@@ -100,18 +116,41 @@ struct PanamApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ZStack {
-                // Always mounted, even while locked — the lock screen is a
-                // pure overlay so switching tabs/scroll position isn't lost
-                // each time the app locks and unlocks.
-                ContentView()
+            Group {
+                if needsGoogleSignIn {
+                    // One-time gate, ahead of everything else — no Face ID
+                    // flow, no ContentView, until this succeeds once.
+                    GoogleSignInGateView(authState: authState, gmailAuth: gmailAuth) {
+                        needsGoogleSignIn = false
+                    }
+                } else {
+                    ZStack {
+                        // Always mounted, even while locked — the lock screen is a
+                        // pure overlay so switching tabs/scroll position isn't lost
+                        // each time the app locks and unlocks.
+                        ContentView()
 
-                if biometricLockEnabled && !authState.isUnlocked {
-                    AppLockView(authState: authState)
-                        .transition(.opacity)
+                        if biometricLockEnabled && !authState.isUnlocked {
+                            AppLockView(authState: authState)
+                                .transition(.opacity)
+                        }
+                    }
                 }
             }
             .environment(privacyState)
+            .environment(gmailAuth)
+            .onOpenURL { url in
+                GIDSignIn.sharedInstance.handle(url)
+            }
+            .task {
+                // Silently restores GIDSignIn's session (for
+                // gmailAuth.signedInEmail) — irrelevant to needsGoogleSignIn
+                // above, which is gated purely on the persisted Keychain
+                // flag. So a returning user skips straight past this
+                // regardless of whether restoration succeeds, fails, or
+                // never gets a chance to run offline.
+                gmailAuth.restorePreviousSignIn()
+            }
             .onChange(of: scenePhase) { _, newPhase in
                 switch newPhase {
                 case .background:

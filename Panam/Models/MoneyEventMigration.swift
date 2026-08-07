@@ -156,4 +156,15 @@ enum MoneyEventMigration {
             print("[MoneyEventMigration] Source-transaction backfill save failed: \(error). Will retry on next launch.")
         }
     }
+
+    /// Clears both one-time completion flags so runOneTimeMigration and
+    /// runSourceTransactionBackfillIfNeeded run again immediately — used by
+    /// DriveBackupManager.restore(context:) right after replacing local
+    /// data, since MoneyEvent (a derived read-mirror) isn't part of the
+    /// backup itself and needs rebuilding from scratch for the restored
+    /// records rather than being left stale from before the restore.
+    static func resetForRestore() {
+        UserDefaults.standard.removeObject(forKey: completionKey)
+        UserDefaults.standard.removeObject(forKey: sourceBackfillCompletionKey)
+    }
 }

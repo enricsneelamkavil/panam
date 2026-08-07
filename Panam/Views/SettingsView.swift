@@ -43,6 +43,15 @@ struct SettingsView: View {
                         Text("Never").tag(0)
                     }
                 }
+
+                Section {
+                    NavigationLink("Email Import") {
+                        EmailImportView()
+                    }
+                    NavigationLink("Backup & Restore") {
+                        BackupRestoreView()
+                    }
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)

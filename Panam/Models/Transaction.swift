@@ -3,6 +3,8 @@ import SwiftData
 
 @Model
 final class Transaction {
+    /// See Account.backupID.
+    var backupID: UUID = UUID()
     var amount: Double
     var date: Date
     var note: String

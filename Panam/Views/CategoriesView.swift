@@ -160,8 +160,6 @@ private struct AddEditCategoryView: View {
     @State private var icon = "circle.fill"
     @State private var showingIconPicker = false
     @State private var groupName = ""
-    @State private var useCustomColor = false
-    @State private var selectedColor: Color = .blue
 
     private var isEditing: Bool { category != nil }
 
@@ -205,15 +203,6 @@ private struct AddEditCategoryView: View {
                 }
 
                 Section {
-                    Toggle("Custom Color", isOn: $useCustomColor.animation())
-                    if useCustomColor {
-                        ColorPicker("Category Color", selection: $selectedColor, supportsOpacity: false)
-                    }
-                } footer: {
-                    Text("Used for this category's dot in Top Categories and its segment in the Spend Bar. Leave off to use the automatically assigned color.")
-                }
-
-                Section {
                     TextField("Group (optional)", text: $groupName)
                 } footer: {
                     Text("Categories are grouped and sorted by this in the Categories list. Leave blank to show under \"Other.\"")
@@ -244,10 +233,6 @@ private struct AddEditCategoryView: View {
                 name = category.name
                 icon = category.icon
                 groupName = category.groupName ?? ""
-                if let hex = category.colorHex, let customColor = Color(hex: hex) {
-                    useCustomColor = true
-                    selectedColor = customColor
-                }
             }
         }
     }
@@ -256,19 +241,16 @@ private struct AddEditCategoryView: View {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         guard !trimmedName.isEmpty else { return }
         let trimmedGroup = groupName.trimmingCharacters(in: .whitespaces)
-        let hex = useCustomColor ? selectedColor.hexString : nil
 
         if let category {
             category.name = trimmedName
             category.groupName = trimmedGroup.isEmpty ? nil : trimmedGroup
-            category.colorHex = hex
             category.icon = icon
         } else {
             modelContext.insert(Category(
                 name: trimmedName,
                 icon: icon,
-                groupName: trimmedGroup.isEmpty ? nil : trimmedGroup,
-                colorHex: hex
+                groupName: trimmedGroup.isEmpty ? nil : trimmedGroup
             ))
         }
         dismiss()

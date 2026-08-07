@@ -3,6 +3,8 @@ import SwiftData
 
 @Model
 final class LendingEntry {
+    /// See Account.backupID.
+    var backupID: UUID = UUID()
     var amount: Double
     var date: Date
     var note: String

@@ -20,6 +20,15 @@
 	<string>Panam uses the microphone to let you add entries by voice.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Panam uses speech recognition to transcribe your voice entries.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.323017888629-31n5drtdfkqeereedhl3ea2h55368otg</string>
+			</array>
+		</dict>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

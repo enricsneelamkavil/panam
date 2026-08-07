@@ -3,6 +3,11 @@ import SwiftData
 
 @Model
 final class Account {
+    /// Stable local identifier used to preserve cross-record relationships
+    /// (e.g. a Transaction's account) across a Drive backup/restore round
+    /// trip — see DriveBackupManager. Assigned once at creation, never
+    /// regenerated.
+    var backupID: UUID = UUID()
     var name: String
     var type: AccountType
     var balance: Double
@@ -14,6 +19,10 @@ final class Account {
     var feeWaiverSpendTarget: Double?
     var feeYearStartDate: Date?
     var createdAt: Date
+    /// Last 4 digits of the bank account/card number — bank and credit card
+    /// accounts only. Never shown in the UI; used solely to match an email
+    /// alert's "XX1234"/"ending 1234" to the right account during import.
+    var lastFourDigits: String?
 
     init(name: String, type: AccountType, balance: Double = 0,
          creditLimit: Double? = nil, statementDay: Int? = nil, dueDay: Int? = nil,

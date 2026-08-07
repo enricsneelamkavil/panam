@@ -102,7 +102,7 @@ private struct UPIAppTransactionsView: View {
             } else {
                 transaction.account?.reverseTransaction(amount: transaction.amount, type: transaction.type)
             }
-            modelContext.delete(transaction)
+            safelyDelete(transaction: transaction, context: modelContext)
         }
     }
 }

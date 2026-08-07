@@ -3,6 +3,8 @@ import SwiftData
 
 @Model
 final class CardPayment {
+    /// See Account.backupID.
+    var backupID: UUID = UUID()
     var type: CardPaymentType
     var amount: Double
     var feeAmount: Double?

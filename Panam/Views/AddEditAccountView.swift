@@ -23,12 +23,23 @@ struct AddEditAccountView: View {
     @State private var annualFeeAmount: Double?
     @State private var feeWaiverSpendTarget: Double?
     @State private var feeYearStartDate: Date = .now
+    @State private var lastFourDigits = ""
 
     private var isEditing: Bool { account != nil }
 
     /// A Cash account other than the one being edited already exists.
     private var duplicateCashExists: Bool {
         accounts.contains { $0.type == .cash && $0.persistentModelID != account?.persistentModelID }
+    }
+
+    /// Constrains input to at most 4 digits as the user types.
+    private var lastFourDigitsBinding: Binding<String> {
+        Binding(
+            get: { lastFourDigits },
+            set: { newValue in
+                lastFourDigits = String(newValue.filter(\.isNumber).prefix(4))
+            }
+        )
     }
 
     private var canSave: Bool {
@@ -67,6 +78,15 @@ struct AddEditAccountView: View {
                         format: .number
                     )
                     .keyboardType(.decimalPad)
+                }
+
+                if type == .bank || type == .creditCard {
+                    Section {
+                        TextField("Last 4 Digits (for email matching only)", text: lastFourDigitsBinding)
+                            .keyboardType(.numberPad)
+                    } footer: {
+                        Text("Never shown elsewhere in the app — used only to match transaction alert emails to this account during import.")
+                    }
                 }
 
                 if type == .creditCard {
@@ -128,6 +148,7 @@ struct AddEditAccountView: View {
         annualFeeAmount = account.annualFeeAmount
         feeWaiverSpendTarget = account.feeWaiverSpendTarget
         feeYearStartDate = account.feeYearStartDate ?? .now
+        lastFourDigits = account.lastFourDigits ?? ""
     }
 
     private func save() {
@@ -145,6 +166,8 @@ struct AddEditAccountView: View {
         let resolvedFeeTarget = type == .creditCard ? feeWaiverSpendTarget : nil
         let resolvedFeeYearStart: Date? = (resolvedAnnualFee != nil || resolvedFeeTarget != nil)
             ? feeYearStartDate : nil
+        let resolvedLastFour: String? = (type == .bank || type == .creditCard) && !lastFourDigits.isEmpty
+            ? lastFourDigits : nil
 
         if let account {
             account.name = trimmedName
@@ -156,6 +179,7 @@ struct AddEditAccountView: View {
             account.annualFeeAmount = resolvedAnnualFee
             account.feeWaiverSpendTarget = resolvedFeeTarget
             account.feeYearStartDate = resolvedFeeYearStart
+            account.lastFourDigits = resolvedLastFour
         } else {
             let newAccount = Account(
                 name: trimmedName,
@@ -168,6 +192,7 @@ struct AddEditAccountView: View {
             newAccount.annualFeeAmount = resolvedAnnualFee
             newAccount.feeWaiverSpendTarget = resolvedFeeTarget
             newAccount.feeYearStartDate = resolvedFeeYearStart
+            newAccount.lastFourDigits = resolvedLastFour
             modelContext.insert(newAccount)
         }
         dismiss()

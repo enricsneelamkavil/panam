@@ -3,6 +3,8 @@ import SwiftData
 
 @Model
 final class InvestmentOccurrence {
+    /// See Account.backupID.
+    var backupID: UUID = UUID()
     var dueDate: Date
     var expectedAmount: Double
     var actualAmount: Double?

@@ -3,6 +3,8 @@ import SwiftData
 
 @Model
 final class CreditCardEMI {
+    /// See Account.backupID.
+    var backupID: UUID = UUID()
     var name: String              // e.g. "iPhone 16 Pro Max"
     var account: Account?         // the credit card this EMI is on
     var principalAmount: Double   // original purchase/loan amount, informational

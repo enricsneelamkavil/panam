@@ -3,6 +3,8 @@ import SwiftData
 
 @Model
 final class RecurringOccurrence {
+    /// See Account.backupID.
+    var backupID: UUID = UUID()
     var dueDate: Date
     var expectedAmount: Double   // snapshot from template at generation time
     var actualAmount: Double?    // set when marked paid; nil = not yet paid

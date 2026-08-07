@@ -18,6 +18,12 @@ struct ParsedTransaction {
     @Guide(description: "A short note capturing any extra detail mentioned, or nil")
     var note: String?
 
+    @Guide(description: "The merchant or payee name mentioned, or nil if unclear")
+    var merchantName: String?
+
+    @Guide(description: "The last 4 digits of the account/card number mentioned (e.g. from 'XX1234' or 'ending 1234'), or nil if not stated")
+    var lastFourDigits: String?
+
     @Guide(description: "The transaction date as yyyy-MM-dd (ISO 8601), resolved from any spoken reference (e.g. 'yesterday', 'last Friday'); nil or omitted means today")
     var resolvedDateString: String?
 

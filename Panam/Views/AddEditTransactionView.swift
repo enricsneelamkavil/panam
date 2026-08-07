@@ -28,6 +28,13 @@ struct AddEditTransactionView: View {
     /// The transaction being edited, or nil when creating a new one.
     var transaction: Transaction?
 
+    /// Pre-fills a new transaction (e.g. from email import review) — ignored when editing.
+    var prefill: ParsedTransaction?
+
+    /// Called right after a successful save, before dismissal — lets callers
+    /// (e.g. email import) react without this view knowing about them.
+    var onSaved: (() -> Void)?
+
     @Query(sort: \Account.name) private var accounts: [Account]
     @Query(sort: \Category.name) private var categories: [Category]
     @Query(sort: \Person.name) private var people: [Person]
@@ -482,7 +489,16 @@ struct AddEditTransactionView: View {
             selectedCategory = match
         }
 
-        if paymentMethod == .cash {
+        // A last-4-digits match (from an email alert) is unambiguous where a
+        // name/merchant guess isn't — it takes priority, and if it's present
+        // but matches nothing, we deliberately leave the account unselected
+        // rather than fall back to guessing by name.
+        let trimmedLastFour = parsed.lastFourDigits?.trimmingCharacters(in: .whitespaces) ?? ""
+        if !trimmedLastFour.isEmpty {
+            if let match = accounts.first(where: { $0.lastFourDigits == trimmedLastFour }) {
+                selectedAccount = match
+            }
+        } else if paymentMethod == .cash {
             selectedAccount = cashAccount
         } else if let name = parsed.accountName,
                   let match = filteredAccounts.first(where: {
@@ -494,10 +510,17 @@ struct AddEditTransactionView: View {
         if let parsedNote = parsed.note, !parsedNote.isEmpty {
             note = parsedNote
         }
+
+        if let parsedMerchant = parsed.merchantName, !parsedMerchant.isEmpty {
+            merchantName = parsedMerchant
+        }
     }
 
     private func populateFromTransaction() {
-        guard let transaction else { return }
+        guard let transaction else {
+            if let prefill { apply(prefill) }
+            return
+        }
         type = transaction.type
         if transaction.type == .adjustment {
             amount = abs(transaction.amount)
@@ -607,6 +630,7 @@ struct AddEditTransactionView: View {
                 }
             }
         }
+        onSaved?()
         dismiss()
     }
 

@@ -13,4 +13,19 @@ enum AppSettings {
 
     static let biometricLockEnabledKey = "biometricLockEnabled"
     static let biometricLockEnabledDefault = true
+
+    /// Newline-joined list of Gmail sender addresses/domains/keywords to search
+    /// for transaction alert emails (e.g. "alerts@hdfcbank.net"). Seeded with a
+    /// starting set of common Indian bank alert senders on first launch of the
+    /// Email Import screen — from then on it's stored/edited exactly like any
+    /// user-added term, via the same @AppStorage key.
+    static let gmailSenderTermsKey = "gmailSenderTerms"
+    static let gmailSenderTermsDefault = [
+        "alerts@hdfcbank.bank.in",
+        "nachautoemailer@hdfcbank.bank.in",
+        "alerts@axis.bank.in",
+        "alerts@dcb.bank.in",
+        "onlinesbicard@sbicard.com",
+        "alerts@notification.my.rbl.bank.in",
+    ].joined(separator: "\n")
 }

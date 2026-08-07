@@ -3,6 +3,8 @@ import SwiftData
 
 @Model
 final class RecurringPayment {
+    /// See Account.backupID.
+    var backupID: UUID = UUID()
     var name: String
     var expectedAmount: Double
     var cadence: Cadence

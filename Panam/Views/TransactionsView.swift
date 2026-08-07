@@ -176,7 +176,7 @@ struct TransactionsView: View {
                     type: transaction.type
                 )
             }
-            modelContext.delete(transaction)
+            safelyDelete(transaction: transaction, context: modelContext)
         }
     }
 }

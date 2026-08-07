@@ -3,6 +3,8 @@ import SwiftData
 
 @Model
 final class Loan {
+    /// See Account.backupID.
+    var backupID: UUID = UUID()
     var name: String              // e.g. "Personal Loan - HDFC", "Car Loan"
     var principalAmount: Double
     var interestRate: Double?     // annual %, optional/informational

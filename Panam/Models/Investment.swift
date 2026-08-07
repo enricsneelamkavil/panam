@@ -3,6 +3,8 @@ import SwiftData
 
 @Model
 final class Investment {
+    /// See Account.backupID.
+    var backupID: UUID = UUID()
     var instrumentType: InstrumentType
     var name: String            // e.g. "Nifty 50 Index Fund", "HDFC FD 2027"
     var amount: Double

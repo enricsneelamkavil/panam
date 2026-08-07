@@ -3,6 +3,8 @@ import SwiftData
 
 @Model
 final class SplitAllocation {
+    /// See Account.backupID.
+    var backupID: UUID = UUID()
     var amount: Double
     var person: Person?
     var transaction: Transaction?

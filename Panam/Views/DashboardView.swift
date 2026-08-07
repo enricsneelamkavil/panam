@@ -128,14 +128,27 @@ struct DashboardView: View {
         return spent - refunded
     }
 
+    /// Every category with any expense-like spend in the period — .expense
+    /// and .taxAndFee alike, as long as a category is actually assigned.
+    /// Uncategorized spend (category == nil) is tracked separately below
+    /// instead of being silently dropped or folded into these totals.
     private var categoryTotals: [(category: Category, total: Double)] {
         let expenses = periodTransactions.filter {
-            $0.type == .expense && $0.category != nil && !$0.isExcludedFromFlow
+            $0.type.isExpenseLike && $0.category != nil && !$0.isExcludedFromFlow
         }
         let groups = Dictionary(grouping: expenses) { $0.category! }
         return groups
             .map { (category: $0.key, total: $0.value.reduce(0) { $0 + $1.amount }) }
             .sorted { $0.total > $1.total }
+    }
+
+    /// Expense-like spend with no category assigned at all (including
+    /// uncategorized .taxAndFee) — genuinely unattributed, as opposed to
+    /// simply falling outside a top-N cutoff.
+    private var uncategorizedTotal: Double {
+        periodTransactions
+            .filter { $0.type.isExpenseLike && $0.category == nil && !$0.isExcludedFromFlow }
+            .reduce(0) { $0 + $1.amount }
     }
 
     // MARK: - Dues / lending / balances
@@ -381,64 +394,86 @@ struct DashboardView: View {
 
     // MARK: - Card 4: Spending (bar + ranked category list, one card)
 
-    fileprivate static let barPalette: [Color] = [.blue, .green, .orange, .purple, .pink]
+    /// Visually-distinct hues categories are assigned from — Apple's own
+    /// system palette, chosen because it's designed to read well as a set.
+    /// Order here doesn't matter; see `sessionPalette` for the per-session
+    /// shuffle. Deliberately excludes gray, which is reserved for the
+    /// "Uncategorized" bucket elsewhere so it never gets confused with a
+    /// real category's color.
+    fileprivate static let barPalette: [Color] = [
+        .blue, .green, .orange, .purple, .pink, .red,
+        .yellow, .teal, .indigo, .mint, .cyan, .brown,
+    ]
+
+    /// This session's shuffle of `barPalette`. Swift static properties are
+    /// lazily computed on first access and then cached for the process's
+    /// lifetime, so this shuffles fresh once per app launch with nothing
+    /// persisted — reopening the app produces a different arrangement.
+    private static let sessionPalette: [Color] = barPalette.shuffled()
+
+    /// Category → color assignments for this session, filled in lazily as
+    /// categories are first encountered (see `color(for:)`) and kept for
+    /// the rest of the run. This is what makes a category's color stay put
+    /// while the app is open — switching tabs, reopening the bar — even
+    /// though nothing here is persisted to disk.
+    private static var sessionColorAssignments: [PersistentIdentifier: Color] = [:]
 
     /// Color for a category's dot/segment across Top Categories, the Spend
-    /// Bar, and the full breakdown. Uses the category's custom colorHex when
-    /// set; otherwise picks a stable palette color from a hash of the
-    /// category's name, so the same category always renders the same color
-    /// regardless of its current spend-rank — which shifts day to day as
-    /// transactions change, unlike a plain index-into-palette lookup.
+    /// Bar, and the full breakdown. Assigned once per category from this
+    /// session's shuffled palette (cycling back through it if there are
+    /// more categories than palette colors) and cached in
+    /// `sessionColorAssignments` for the rest of the run.
     static func color(for category: Category) -> Color {
-        if let hex = category.colorHex, let custom = Color(hex: hex) {
-            return custom
+        let id = category.persistentModelID
+        if let assigned = sessionColorAssignments[id] {
+            return assigned
         }
-        return barPalette[stableHash(category.name) % barPalette.count]
+        let color = sessionPalette[sessionColorAssignments.count % sessionPalette.count]
+        sessionColorAssignments[id] = color
+        return color
     }
 
-    /// djb2 string hash — deterministic across app launches/processes,
-    /// unlike Swift's randomized String.hashValue.
-    private static func stableHash(_ string: String) -> Int {
-        var hash = 5381
-        for byte in string.utf8 {
-            hash = ((hash << 5) &+ hash) &+ Int(byte)
+    /// Every category with spend in the period, plus a synthetic
+    /// "Uncategorized" entry when there's any expense-like spend with no
+    /// category assigned — sorted together so the biggest slice (named or
+    /// not) leads. This single list drives both the bar and the ranked
+    /// list below it, so the two can't drift out of sync with each other.
+    private var spendEntries: [SpendEntry] {
+        var entries = categoryTotals.map {
+            SpendEntry(
+                id: $0.category.name,
+                name: $0.category.name,
+                total: $0.total,
+                color: Self.color(for: $0.category)
+            )
         }
-        return abs(hash)
+        if uncategorizedTotal > 0 {
+            entries.append(SpendEntry(id: "uncategorized", name: "Uncategorized", total: uncategorizedTotal, color: .gray))
+        }
+        return entries.sorted { $0.total > $1.total }
     }
 
     private var spendSegments: [(id: String, color: Color, share: Double)] {
-        guard expenseTotal > 0 else { return [] }
-
-        // Shares are computed against the sum of what's actually displayed
-        // (top categories + Other), not against expenseTotal directly — that
-        // keeps the bar filled edge-to-edge even when categorized spend
-        // over- or under-shoots expenseTotal (uncategorized amounts, tax/fee
-        // transactions, refund netting, etc.) instead of silently dropping
-        // the remainder below a rounding threshold.
-        let topCategories = Array(categoryTotals.prefix(5))
-        let topTotal = topCategories.reduce(0) { $0 + $1.total }
-        let otherTotal = max(expenseTotal - topTotal, 0)
-        let displayedTotal = topTotal + otherTotal
+        // Shares are computed against the sum of everything actually
+        // displayed (every category + Uncategorized), so the bar always
+        // fills edge-to-edge with no leftover gap and no generic catch-all
+        // swallowing more than one category's spend.
+        let displayedTotal = spendEntries.reduce(0) { $0 + $1.total }
         guard displayedTotal > 0 else { return [] }
-
-        var segments: [(id: String, color: Color, share: Double)] = []
-        for entry in topCategories {
-            segments.append((
-                id: entry.category.name,
-                color: Self.color(for: entry.category),
-                share: entry.total / displayedTotal
-            ))
-        }
-        if otherTotal > 0 {
-            segments.append((id: "other", color: .gray, share: otherTotal / displayedTotal))
-        }
-        return segments
+        return spendEntries.map { (id: $0.id, color: $0.color, share: $0.total / displayedTotal) }
     }
 
     /// Bar (larger, edge-to-edge, no legend) + ranked category list below it,
-    /// in a single card — the original combined layout, reunited.
+    /// in a single card — the original combined layout, reunited. Every bar
+    /// segment corresponds to a real, named category (or "Uncategorized"
+    /// for genuinely unassigned spend) — the list is capped at 5 inline
+    /// with "See All" for the rest, but draws from the same `spendEntries`
+    /// as the bar so the two never disagree.
     private var topCategoriesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Text("Recent Spends")
+                .font(.headline)
+
             if spendSegments.isEmpty {
                 Capsule()
                     .fill(Color.secondary.opacity(0.15))
@@ -457,31 +492,27 @@ struct DashboardView: View {
                 .clipShape(Capsule())
             }
 
-            HStack {
-                Text("Top Categories")
-                    .font(.headline)
-                Spacer()
-                if categoryTotals.count > 5 {
-                    NavigationLink("See All") {
-                        CategoryBreakdownView(totals: categoryTotals)
-                    }
-                    .font(.subheadline)
-                }
-            }
-
-            if categoryTotals.isEmpty {
+            if spendEntries.isEmpty {
                 Text("No spending yet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(categoryTotals.prefix(5), id: \.category.persistentModelID) { entry in
+                ForEach(spendEntries.prefix(5)) { entry in
                     CategoryTotalRow(
-                        category: entry.category,
+                        name: entry.name,
                         total: entry.total,
-                        share: entry.total / (categoryTotals.first?.total ?? 1),
-                        color: Self.color(for: entry.category)
+                        share: entry.total / (spendEntries.first?.total ?? 1),
+                        color: entry.color
                     )
                 }
+            }
+
+            if spendEntries.count > 5 {
+                NavigationLink("See All") {
+                    CategoryBreakdownView(entries: spendEntries)
+                }
+                .font(.subheadline)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .dashboardCard()
@@ -645,18 +676,31 @@ struct DashboardView: View {
 
 // MARK: - Supporting views
 
-/// Full category breakdown, pushed from Top Categories "See All".
+/// A single row of spend data for the bar + ranked list below it — either a
+/// real category or the synthetic "Uncategorized" bucket for expense-like
+/// transactions with no category assigned. Both the Top Categories card and
+/// the full breakdown are driven from arrays of this type so they can't
+/// drift apart.
+private struct SpendEntry: Identifiable {
+    let id: String
+    let name: String
+    let total: Double
+    let color: Color
+}
+
+/// Full category breakdown (including "Uncategorized", when present),
+/// pushed from Top Categories "See All".
 private struct CategoryBreakdownView: View {
-    let totals: [(category: Category, total: Double)]
+    let entries: [SpendEntry]
 
     var body: some View {
         List {
-            ForEach(totals, id: \.category.persistentModelID) { entry in
+            ForEach(entries) { entry in
                 CategoryTotalRow(
-                    category: entry.category,
+                    name: entry.name,
                     total: entry.total,
-                    share: entry.total / (totals.first?.total ?? 1),
-                    color: DashboardView.color(for: entry.category)
+                    share: entry.total / (entries.first?.total ?? 1),
+                    color: entry.color
                 )
             }
         }
@@ -760,7 +804,7 @@ private struct UpcomingDueRow: View {
 }
 
 private struct CategoryTotalRow: View {
-    let category: Category
+    let name: String
     let total: Double
     let share: Double
     let color: Color
@@ -771,7 +815,7 @@ private struct CategoryTotalRow: View {
                 Circle()
                     .fill(color)
                     .frame(width: 8, height: 8)
-                Text(category.name)
+                Text(name)
                 Spacer()
                 MaskableCurrencyText(amount: total)
                     .font(.subheadline.monospacedDigit())
