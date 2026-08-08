@@ -13,10 +13,17 @@ final class RecurringPayment {
     var account: Account?
     var isSubscription: Bool
     var isNecessary: Bool?   // only meaningful when isSubscription is true
-    var isActive: Bool       // false = paused/ended, stop generating new occurrences
+    var isActive: Bool       // false = ended, stop generating new occurrences
     var autopayEnabled: Bool = false   // occurrences auto-marked paid on due date
     var isIncome: Bool = false         // true = expected incoming money (e.g. salary)
     var cancelledDate: Date? = nil     // set when isActive flipped to false via Cancel action
+    /// Temporarily stopped, distinct from Cancelled: `isActive` stays true (so the
+    /// payment still shows in the Active tab and generation guards keep behaving
+    /// like "not ended"), but no new occurrences are generated while this is true —
+    /// see `RecurringOccurrenceGenerator.generateOccurrences`. Meant to resume later
+    /// via Restart, unlike Cancelled (`isActive = false` + `cancelledDate`), which
+    /// is final.
+    var isPaused: Bool = false
 
     /// Optional person this payment is made to (e.g. a chit fund organizer).
     /// Reference only — distinct from LendingEntry and does not affect any

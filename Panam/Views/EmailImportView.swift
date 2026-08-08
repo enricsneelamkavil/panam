@@ -59,7 +59,7 @@ struct EmailImportView: View {
                     .onDelete(perform: removeSenderTerms)
 
                     HStack {
-                        TextField("e.g. alerts@hdfcbank.net", text: $newSenderTerm)
+                        TextField("", text: $newSenderTerm, prompt: Text("e.g. alerts@hdfcbank.net").foregroundStyle(.secondary))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                         Button("Add", action: addSenderTerm)
@@ -83,8 +83,8 @@ struct EmailImportView: View {
                                 .frame(maxWidth: .infinity)
                         }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.appPrimary)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.appPrimary)
                     .disabled(isFetching || senderTerms.isEmpty)
 
                     if let fetchErrorMessage {

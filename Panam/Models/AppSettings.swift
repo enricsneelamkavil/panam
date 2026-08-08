@@ -14,6 +14,16 @@ enum AppSettings {
     static let biometricLockEnabledKey = "biometricLockEnabled"
     static let biometricLockEnabledDefault = true
 
+    /// Whether the daily Drive backup should run automatically in the
+    /// background via BGTaskScheduler — see BackgroundBackupScheduler.
+    static let autoBackupEnabledKey = "autoBackupEnabled"
+    static let autoBackupEnabledDefault = false
+
+    /// Target hour (24-hour, 0–23) for the automatic backup. iOS treats this
+    /// as a hint, not a guarantee — see BackgroundBackupScheduler.
+    static let autoBackupHourKey = "autoBackupHour"
+    static let autoBackupHourDefault = 3
+
     /// Newline-joined list of Gmail sender addresses/domains/keywords to search
     /// for transaction alert emails (e.g. "alerts@hdfcbank.net"). Seeded with a
     /// starting set of common Indian bank alert senders on first launch of the

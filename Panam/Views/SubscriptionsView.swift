@@ -61,13 +61,12 @@ struct SubscriptionsView: View {
 
     var body: some View {
         List {
-            Section {
-                Picker("", selection: $tab) {
-                    Text("Active").tag(SubscriptionTab.active)
-                    Text("Cancelled").tag(SubscriptionTab.cancelled)
-                }
-                .pickerStyle(.segmented)
+            Picker("", selection: $tab) {
+                Text("Active").tag(SubscriptionTab.active)
+                Text("Cancelled").tag(SubscriptionTab.cancelled)
             }
+            .pickerStyle(.segmented)
+            .listRowBackground(Color.clear)
 
             if tab == .active {
                 Section {
@@ -90,6 +89,21 @@ struct SubscriptionsView: View {
                                     cancelSubscription(subscription)
                                 } label: {
                                     Label("Cancel", systemImage: "xmark.circle")
+                                }
+                                if subscription.isPaused {
+                                    Button {
+                                        restartSubscription(subscription)
+                                    } label: {
+                                        Label("Restart", systemImage: "play.circle")
+                                    }
+                                    .tint(.green)
+                                } else {
+                                    Button {
+                                        pauseSubscription(subscription)
+                                    } label: {
+                                        Label("Pause", systemImage: "pause.circle")
+                                    }
+                                    .tint(.orange)
                                 }
                             }
                     }
@@ -130,6 +144,7 @@ struct SubscriptionsView: View {
 
     private func cancelSubscription(_ payment: RecurringPayment) {
         payment.isActive = false
+        payment.isPaused = false
         payment.cancelledDate = .now
         let now = Date.now
         for occurrence in payment.occurrences where !occurrence.isPaid && occurrence.dueDate > now {
@@ -139,7 +154,23 @@ struct SubscriptionsView: View {
 
     private func reactivateSubscription(_ payment: RecurringPayment) {
         payment.isActive = true
+        payment.isPaused = false
         payment.cancelledDate = nil
+        RecurringOccurrenceGenerator.generateOccurrences(for: payment, context: modelContext)
+    }
+
+    /// Temporarily stops generation without cancelling — stays in the Active
+    /// tab (isActive untouched) but no new occurrences appear until Restart.
+    private func pauseSubscription(_ payment: RecurringPayment) {
+        payment.isPaused = true
+        let now = Date.now
+        for occurrence in payment.occurrences where !occurrence.isPaid && occurrence.dueDate > now {
+            modelContext.delete(occurrence)
+        }
+    }
+
+    private func restartSubscription(_ payment: RecurringPayment) {
+        payment.isPaused = false
         RecurringOccurrenceGenerator.generateOccurrences(for: payment, context: modelContext)
     }
 }
@@ -167,9 +198,17 @@ private struct SubscriptionRow: View {
                 HStack(spacing: 4) {
                     Text(subscription.name)
                     if subscription.autopayEnabled {
-                        Image(systemName: "a.circle.fill")
+                        Text("(A)")
                             .font(.caption)
-                            .foregroundStyle(.tint)
+                            .foregroundStyle(.secondary)
+                    }
+                    if subscription.isPaused {
+                        Text("Paused")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.orange.opacity(0.15), in: Capsule())
                     }
                 }
                 Text("\(subscription.cadence.displayName) · \(subscription.expectedAmount.formatted(.currency(code: "INR").locale(Locale(identifier: "en_IN"))))")

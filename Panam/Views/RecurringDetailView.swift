@@ -60,7 +60,7 @@ struct RecurringDetailView: View {
                 }
             }
         }
-        .navigationTitle(payment.name)
+        .navigationTitle(payment.autopayEnabled ? "\(payment.name) (A)" : payment.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {

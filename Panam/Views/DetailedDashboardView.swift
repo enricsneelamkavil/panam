@@ -218,13 +218,16 @@ struct DetailedDashboardView: View {
         var id: String { "\(categoryName)|\(bucketStart.timeIntervalSinceReferenceDate)" }
     }
 
+    /// Uses `effectiveAmount` (not `amount`) so a split transaction only
+    /// contributes the user's own portion to a category's trend — see
+    /// `Transaction.effectiveAmount`.
     private var topCategoryNames: [String] {
         let expenses = rangeTransactions.filter {
             $0.type == .expense && $0.category != nil && !$0.isExcludedFromFlow
         }
         let groups = Dictionary(grouping: expenses) { $0.category!.name }
         return groups
-            .map { (name: $0.key, total: $0.value.reduce(0) { $0 + $1.amount }) }
+            .map { (name: $0.key, total: $0.value.reduce(0) { $0 + $1.effectiveAmount }) }
             .sorted { $0.total > $1.total }
             .prefix(3)
             .map(\.name)
@@ -237,7 +240,7 @@ struct DetailedDashboardView: View {
         var totals: [String: [Date: Double]] = [:]
         for transaction in rangeTransactions where transaction.type == .expense && !transaction.isExcludedFromFlow {
             guard let name = transaction.category?.name, names.contains(name) else { continue }
-            totals[name, default: [:]][bucketStart(for: transaction.date), default: 0] += transaction.amount
+            totals[name, default: [:]][bucketStart(for: transaction.date), default: 0] += transaction.effectiveAmount
         }
 
         // Zero-fill every bucket so each category draws a continuous line.
@@ -261,7 +264,7 @@ struct DetailedDashboardView: View {
         var totals: [String: Double] = [:]
         for transaction in rangeTransactions where transaction.type == .expense && !transaction.isExcludedFromFlow {
             guard let name = transaction.category?.name, names.contains(name) else { continue }
-            totals[name, default: 0] += transaction.amount
+            totals[name, default: 0] += transaction.effectiveAmount
         }
         return names.map { (name: $0, total: totals[$0] ?? 0) }
     }

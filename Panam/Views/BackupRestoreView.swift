@@ -15,7 +15,20 @@ struct BackupRestoreView: View {
     @State private var driveBackupManager = DriveBackupManager()
     @State private var showingRestoreConfirmation = false
 
+    @AppStorage(AppSettings.autoBackupEnabledKey)
+    private var autoBackupEnabled = AppSettings.autoBackupEnabledDefault
+
+    @AppStorage(AppSettings.autoBackupHourKey)
+    private var autoBackupHour = AppSettings.autoBackupHourDefault
+
     private static let dateFormat = Date.FormatStyle(date: .abbreviated, time: .shortened)
+
+    /// "3:00 AM" style label for a 24-hour value, for the hour picker below.
+    private static func hourLabel(_ hour: Int) -> String {
+        let components = DateComponents(hour: hour, minute: 0)
+        let date = Calendar.current.date(from: components) ?? .now
+        return date.formatted(.dateTime.hour().minute())
+    }
 
     var body: some View {
         Form {
@@ -45,6 +58,26 @@ struct BackupRestoreView: View {
                 }
             } footer: {
                 Text("Saves all your accounts, transactions, and other Panam data to a private file in your Google Drive — hidden from the regular Drive app, visible only to Panam.")
+            }
+
+            Section {
+                Toggle("Auto Backup", isOn: $autoBackupEnabled)
+                    .onChange(of: autoBackupEnabled) { _, _ in
+                        BackgroundBackupScheduler.scheduleNext()
+                    }
+
+                if autoBackupEnabled {
+                    Picker("Backup Time", selection: $autoBackupHour) {
+                        ForEach(0..<24, id: \.self) { hour in
+                            Text(Self.hourLabel(hour)).tag(hour)
+                        }
+                    }
+                    .onChange(of: autoBackupHour) { _, _ in
+                        BackgroundBackupScheduler.scheduleNext()
+                    }
+                }
+            } footer: {
+                Text("Backs up automatically once a day in the background, around the selected time. iOS decides the exact moment based on device usage and battery — the actual backup can land a few hours later than scheduled (or occasionally not run at all if the app is never backgrounded). That's normal background-task behavior, not a malfunction.")
             }
 
             Section {

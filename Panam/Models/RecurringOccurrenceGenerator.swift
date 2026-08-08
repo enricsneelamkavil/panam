@@ -8,7 +8,7 @@ enum RecurringOccurrenceGenerator {
     static func generateOccurrences(for payment: RecurringPayment,
                                     monthsAhead: Int = 12,
                                     context: ModelContext) {
-        guard payment.isActive else { return }
+        guard payment.isActive, !payment.isPaused else { return }
 
         let calendar = Calendar.current
         guard let horizon = calendar.date(byAdding: .month, value: monthsAhead, to: .now)

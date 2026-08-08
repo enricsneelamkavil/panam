@@ -306,6 +306,9 @@ private struct MoneyEventRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if event.isSplit {
+                    SplitSubtitle(portion: event.myPortionAmount)
+                }
             }
 
             Spacer()
@@ -316,6 +319,30 @@ private struct MoneyEventRow: View {
                     .foregroundStyle(event.type.amountColor)
                 Text(event.date, format: .dateTime.day().month(.abbreviated))
                     .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// Small "Split" tag + "Your portion: ₹X" caption, shown wherever a row
+/// represents a split transaction/event so the split status is visible at a
+/// glance without opening the row — used by both `TransactionRow` and
+/// `MoneyEventRow` so the default list and search results read the same way.
+private struct SplitSubtitle: View {
+    let portion: Double?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Label("Split", systemImage: "person.2.fill")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.orange.opacity(0.15), in: Capsule())
+            if let portion {
+                Text("Your portion: \(portion.formatted(.currency(code: "INR").locale(Locale(identifier: "en_IN"))))")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
@@ -463,15 +490,7 @@ struct TransactionRow: View {
                         .font(.body)
                 }
                 if transaction.isSplit {
-                    if let portion = transaction.myPortionAmount {
-                        Text("Split · Your portion \(portion.formatted(.currency(code: "INR").locale(Locale(identifier: "en_IN"))))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Split")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    SplitSubtitle(portion: transaction.myPortionAmount)
                 }
                 if let accountName = transaction.account?.name {
                     Text(accountName)

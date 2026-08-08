@@ -73,6 +73,13 @@ struct PanamApp: App {
         BackupIDBackfill.runIfNeeded(context: sharedModelContainer.mainContext)
         TransactionOrphanCleanup.runIfNeeded(context: sharedModelContainer.mainContext)
         AutopayProcessor.processAutopays(context: sharedModelContainer.mainContext)
+
+        // Registration must happen unconditionally, before launch finishes,
+        // regardless of whether auto-backup is currently toggled on —
+        // BGTaskScheduler requires it every launch. scheduleNext() is the
+        // part that actually no-ops when the setting is off.
+        BackgroundBackupScheduler.register(container: sharedModelContainer)
+        BackgroundBackupScheduler.scheduleNext()
     }
 
     /// TEMPORARY test scaffold — simulates a pre-fix daily-recurring MoneyEvent

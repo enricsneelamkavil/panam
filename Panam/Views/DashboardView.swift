@@ -132,23 +132,27 @@ struct DashboardView: View {
     /// and .taxAndFee alike, as long as a category is actually assigned.
     /// Uncategorized spend (category == nil) is tracked separately below
     /// instead of being silently dropped or folded into these totals.
+    /// Uses `effectiveAmount` (not `amount`) so a split transaction only
+    /// counts the user's own portion here — the account balance still moves
+    /// by the full `amount`, but a category's "spend" is personal spend.
     private var categoryTotals: [(category: Category, total: Double)] {
         let expenses = periodTransactions.filter {
             $0.type.isExpenseLike && $0.category != nil && !$0.isExcludedFromFlow
         }
         let groups = Dictionary(grouping: expenses) { $0.category! }
         return groups
-            .map { (category: $0.key, total: $0.value.reduce(0) { $0 + $1.amount }) }
+            .map { (category: $0.key, total: $0.value.reduce(0) { $0 + $1.effectiveAmount }) }
             .sorted { $0.total > $1.total }
     }
 
     /// Expense-like spend with no category assigned at all (including
     /// uncategorized .taxAndFee) — genuinely unattributed, as opposed to
-    /// simply falling outside a top-N cutoff.
+    /// simply falling outside a top-N cutoff. Also uses `effectiveAmount`,
+    /// for the same reason as `categoryTotals` above.
     private var uncategorizedTotal: Double {
         periodTransactions
             .filter { $0.type.isExpenseLike && $0.category == nil && !$0.isExcludedFromFlow }
-            .reduce(0) { $0 + $1.amount }
+            .reduce(0) { $0 + $1.effectiveAmount }
     }
 
     // MARK: - Dues / lending / balances
@@ -396,41 +400,36 @@ struct DashboardView: View {
 
     /// Visually-distinct hues categories are assigned from — Apple's own
     /// system palette, chosen because it's designed to read well as a set.
-    /// Order here doesn't matter; see `sessionPalette` for the per-session
-    /// shuffle. Deliberately excludes gray, which is reserved for the
-    /// "Uncategorized" bucket elsewhere so it never gets confused with a
-    /// real category's color.
+    /// Order matters now: a category's index into this fixed array is what
+    /// makes `color(for:)` deterministic. Deliberately excludes gray, which
+    /// is reserved for the "Uncategorized" bucket elsewhere so it never gets
+    /// confused with a real category's color.
     fileprivate static let barPalette: [Color] = [
         .blue, .green, .orange, .purple, .pink, .red,
         .yellow, .teal, .indigo, .mint, .cyan, .brown,
     ]
 
-    /// This session's shuffle of `barPalette`. Swift static properties are
-    /// lazily computed on first access and then cached for the process's
-    /// lifetime, so this shuffles fresh once per app launch with nothing
-    /// persisted — reopening the app produces a different arrangement.
-    private static let sessionPalette: [Color] = barPalette.shuffled()
-
-    /// Category → color assignments for this session, filled in lazily as
-    /// categories are first encountered (see `color(for:)`) and kept for
-    /// the rest of the run. This is what makes a category's color stay put
-    /// while the app is open — switching tabs, reopening the bar — even
-    /// though nothing here is persisted to disk.
-    private static var sessionColorAssignments: [PersistentIdentifier: Color] = [:]
+    /// Deterministic FNV-1a hash of a category's name into an index within
+    /// `0..<count`. Swift's built-in `String.hashValue`/`Hasher` are seeded
+    /// randomly per process (hash-flooding protection), so they'd give a
+    /// different index on every launch — this hand-rolled hash is stable
+    /// across launches, devices, and Swift versions instead.
+    private static func stableIndex(for name: String, count: Int) -> Int {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325 // FNV-1a 64-bit offset basis
+        for byte in name.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3 // FNV-1a 64-bit prime
+        }
+        return Int(hash % UInt64(count))
+    }
 
     /// Color for a category's dot/segment across Top Categories, the Spend
-    /// Bar, and the full breakdown. Assigned once per category from this
-    /// session's shuffled palette (cycling back through it if there are
-    /// more categories than palette colors) and cached in
-    /// `sessionColorAssignments` for the rest of the run.
+    /// Bar, and the full breakdown. Derived from the category's name via a
+    /// stable hash into the fixed `barPalette`, so the same category always
+    /// gets the same color — every launch, with nothing persisted to disk
+    /// and no session-only state to keep in sync.
     static func color(for category: Category) -> Color {
-        let id = category.persistentModelID
-        if let assigned = sessionColorAssignments[id] {
-            return assigned
-        }
-        let color = sessionPalette[sessionColorAssignments.count % sessionPalette.count]
-        sessionColorAssignments[id] = color
-        return color
+        barPalette[stableIndex(for: category.name, count: barPalette.count)]
     }
 
     /// Every category with spend in the period, plus a synthetic

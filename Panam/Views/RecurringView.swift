@@ -112,8 +112,15 @@ private struct RecurringPaymentRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(payment.name)
-                    .font(.body)
+                HStack(spacing: 4) {
+                    Text(payment.name)
+                        .font(.body)
+                    if payment.autopayEnabled {
+                        Text("(A)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Text(payment.cadence.displayName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
