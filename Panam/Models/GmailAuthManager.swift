@@ -29,9 +29,9 @@ final class GmailAuthManager {
     }
 
     /// - Parameter completion: Reports whether sign-in actually succeeded —
-    ///   used by the one-time Google sign-in gate at launch to know when to
-    ///   proceed. Callers that already watch `signedInEmail` reactively
-    ///   (e.g. EmailImportView) can omit it.
+    ///   used by LoginGateView and ProfileView's guest-to-Google upgrade to
+    ///   know when to flip AuthState.authMode. Callers that already watch
+    ///   `signedInEmail` reactively can omit it.
     func signIn(completion: ((Bool) -> Void)? = nil) {
         guard let rootViewController = Self.rootViewController else {
             completion?(false)

@@ -1,40 +1,26 @@
 {
   "fill" : {
-    "automatic-gradient" : "display-p3:0.95770,1.00000,0.97719,1.00000"
+    "solid" : "display-p3:0.86275,0.92157,0.34510,1.00000"
   },
   "groups" : [
     {
       "layers" : [
         {
-          "fill" : {
-            "solid" : "display-p3:0.71719,0.62611,0.48234,1.00000"
-          },
-          "image-name" : "logoIcon.svg",
-          "name" : "logoIcon",
-          "position" : {
-            "scale" : 1.46,
-            "translation-in-points" : [
-              -11.897875869158952,
-              0.6011999999815316
-            ]
-          }
-        },
-        {
           "fill-specializations" : [
             {
               "appearance" : "dark",
               "value" : {
-                "solid" : "extended-gray:1.00000,1.00000"
+                "solid" : "srgb:0.86275,0.92157,0.34510,1.00000"
               }
             }
           ],
-          "image-name" : "logoIcon-1 2.svg",
-          "name" : "logoIcon-1 2",
+          "image-name" : "പ.svg",
+          "name" : "പ",
           "position" : {
-            "scale" : 1.46,
+            "scale" : 16.09,
             "translation-in-points" : [
-              -11.897875869158952,
-              0.6011999999815316
+              0,
+              0
             ]
           }
         }

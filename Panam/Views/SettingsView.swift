@@ -3,6 +3,8 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
+    @State private var showingReorder = false
+
     @AppStorage(AppSettings.salaryDayKey)
     private var salaryDay = AppSettings.salaryDayDefault
 
@@ -33,6 +35,14 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Button("Reorder Home") {
+                        showingReorder = true
+                    }
+                } footer: {
+                    Text("Change the order of — or hide — sections on the Dashboard's Today tab.")
+                }
+
+                Section {
                     Toggle("Require Face ID / Passcode", isOn: $biometricLockEnabled)
 
                     Picker("Auto-Lock After", selection: $autoLockMinutes) {
@@ -45,12 +55,11 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    NavigationLink("Email Import") {
-                        EmailImportView()
+                    NavigationLink("Import Statement") {
+                        StatementImportView()
                     }
-                    NavigationLink("Backup & Restore") {
-                        BackupRestoreView()
-                    }
+                } footer: {
+                    Text("Reconcile a bank or card statement PDF against what's already logged in Panam.")
                 }
             }
             .navigationTitle("Settings")
@@ -61,6 +70,9 @@ struct SettingsView: View {
                         dismiss()
                     }
                 }
+            }
+            .sheet(isPresented: $showingReorder) {
+                DashboardReorderView()
             }
         }
     }

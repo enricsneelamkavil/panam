@@ -53,7 +53,7 @@ enum DriveBackupError: LocalizedError {
 /// checked first, and `backupID` is only ever read once that's confirmed.
 /// If the reference is dangling, this degrades to `nil` instead of
 /// crashing the whole backup.
-private func safeBackupID(_ transaction: Transaction?, validTransactionIDs: Set<PersistentIdentifier>) -> UUID? {
+private nonisolated func safeBackupID(_ transaction: Transaction?, validTransactionIDs: Set<PersistentIdentifier>) -> UUID? {
     guard let transaction, validTransactionIDs.contains(transaction.persistentModelID) else { return nil }
     return transaction.backupID
 }

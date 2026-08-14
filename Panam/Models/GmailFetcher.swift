@@ -15,6 +15,21 @@ struct GmailMessage {
     let bodyText: String
 }
 
+/// A statement email found by searchStatementEmails — just enough to list
+/// and identify it (subject/from/date) plus the PDF attachment's
+/// messages.attachments identifier, which downloadAttachment(messageID:attachmentID:)
+/// needs to actually pull the file down. Deliberately doesn't fetch the
+/// attachment bytes up front — that only happens once the user taps a
+/// specific email to import.
+struct GmailMessageSummary: Identifiable {
+    let id: String
+    let subject: String
+    let from: String
+    let dateString: String
+    let attachmentID: String
+    let attachmentFilename: String
+}
+
 enum GmailFetchError: LocalizedError {
     case notSignedIn
     case tokenUnavailable
@@ -82,6 +97,46 @@ enum GmailFetcher {
         return messages
     }
 
+    /// Same messages.list pattern as fetchCandidateMessages, but against a
+    /// separate, statement-specific sender/keyword list (statement emails
+    /// come from different addresses and subject patterns than
+    /// per-transaction alerts — "e-Statement," "Monthly Statement," etc.)
+    /// and narrowed to messages that actually carry a PDF attachment.
+    /// Doesn't consult/mark importedMessageIDs — that tracking is
+    /// per-transaction-candidate, not meaningful for a whole statement file.
+    static func searchStatementEmails(senderTerms: [String], lookbackDays: Int = 180) async throws -> [GmailMessageSummary] {
+        guard !senderTerms.isEmpty else { return [] }
+
+        let accessToken = try await currentAccessToken()
+        let fromClause = senderTerms.joined(separator: " OR ")
+        let query = "from:(\(fromClause)) has:attachment filename:pdf newer_than:\(lookbackDays)d"
+
+        let messageIDs = try await listMessageIDs(query: query, accessToken: accessToken)
+
+        var summaries: [GmailMessageSummary] = []
+        for id in messageIDs {
+            if let summary = try await fetchStatementSummary(id: id, accessToken: accessToken) {
+                summaries.append(summary)
+            }
+        }
+        return summaries
+    }
+
+    /// Downloads one PDF attachment's raw bytes via messages.attachments.get.
+    /// Gmail returns the content base64url-encoded, same alphabet as message
+    /// bodies but decoded here straight to Data (an attachment is binary,
+    /// not necessarily valid UTF-8 text like a message body is).
+    static func downloadAttachment(messageID: String, attachmentID: String) async throws -> Data {
+        let accessToken = try await currentAccessToken()
+        let url = URL(string: "\(apiBase)/messages/\(messageID)/attachments/\(attachmentID)")!
+        let responseData = try await get(url, accessToken: accessToken)
+        let decoded = try JSONDecoder().decode(AttachmentResponse.self, from: responseData)
+        guard let pdfData = decodeBase64URLData(decoded.data) else {
+            throw GmailFetchError.decoding
+        }
+        return pdfData
+    }
+
     // MARK: - Auth
 
     private static func currentAccessToken() async throws -> String {
@@ -121,9 +176,10 @@ enum GmailFetcher {
 
     private struct MessageResponse: Decodable {
         struct Header: Decodable { let name: String; let value: String }
-        struct Body: Decodable { let data: String? }
+        struct Body: Decodable { let data: String?; let attachmentId: String? }
         struct Part: Decodable {
             let mimeType: String?
+            let filename: String?
             let headers: [Header]?
             let body: Body?
             let parts: [Part]?
@@ -131,6 +187,10 @@ enum GmailFetcher {
         let id: String
         let snippet: String?
         let payload: Part?
+    }
+
+    private struct AttachmentResponse: Decodable {
+        let data: String
     }
 
     private static func fetchMessage(id: String, accessToken: String) async throws -> GmailMessage? {
@@ -144,6 +204,49 @@ enum GmailFetcher {
         let bodyText = extractBodyText(from: decoded.payload) ?? decoded.snippet ?? ""
 
         return GmailMessage(id: decoded.id, subject: subject, snippet: decoded.snippet ?? "", bodyText: bodyText)
+    }
+
+    /// nil when the message has no PDF attachment at all (shouldn't happen
+    /// given the `has:attachment filename:pdf` query, but a query match
+    /// doesn't guarantee the MIME tree parses the way we expect it to).
+    private static func fetchStatementSummary(id: String, accessToken: String) async throws -> GmailMessageSummary? {
+        let url = URL(string: "\(apiBase)/messages/\(id)?format=full")!
+        let data = try await get(url, accessToken: accessToken)
+        let decoded = try JSONDecoder().decode(MessageResponse.self, from: data)
+
+        guard let payload = decoded.payload,
+              let attachment = findPDFAttachment(in: payload) else {
+            return nil
+        }
+
+        func header(_ name: String) -> String? {
+            decoded.payload?.headers?.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.value
+        }
+
+        return GmailMessageSummary(
+            id: decoded.id,
+            subject: header("Subject") ?? "(no subject)",
+            from: header("From") ?? "",
+            dateString: header("Date") ?? "",
+            attachmentID: attachment.attachmentID,
+            attachmentFilename: attachment.filename
+        )
+    }
+
+    /// Depth-first search of the MIME tree for the first PDF part — by
+    /// declared mimeType, falling back to a ".pdf" filename for servers
+    /// that mislabel the part's mimeType (seen from some bank mailers).
+    private static func findPDFAttachment(in part: MessageResponse.Part) -> (attachmentID: String, filename: String)? {
+        let looksLikePDF = part.mimeType == "application/pdf"
+            || (part.filename?.lowercased().hasSuffix(".pdf") ?? false)
+        if looksLikePDF, let attachmentID = part.body?.attachmentId {
+            return (attachmentID, part.filename ?? "statement.pdf")
+        }
+        guard let children = part.parts else { return nil }
+        for child in children {
+            if let found = findPDFAttachment(in: child) { return found }
+        }
+        return nil
     }
 
     private static func get(_ url: URL, accessToken: String) async throws -> Data {
@@ -189,11 +292,20 @@ enum GmailFetcher {
     }
 
     private static func decodeBase64URL(_ string: String) -> String? {
+        guard let data = decodeBase64URLData(string) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Gmail's message bodies and attachments are both base64url-encoded
+    /// (RFC 4648 §5 — "-"/"_" instead of "+"/"/", padding stripped). This is
+    /// the shared decode step; decodeBase64URL(_:) additionally interprets
+    /// the result as UTF-8 text, which only makes sense for a message body,
+    /// never for binary attachment content like a PDF.
+    private static func decodeBase64URLData(_ string: String) -> Data? {
         var base64 = string.replacingOccurrences(of: "-", with: "+")
             .replacingOccurrences(of: "_", with: "/")
         while base64.count % 4 != 0 { base64.append("=") }
-        guard let data = Data(base64Encoded: base64) else { return nil }
-        return String(data: data, encoding: .utf8)
+        return Data(base64Encoded: base64)
     }
 
     private static func stripHTMLTags(_ html: String) -> String {

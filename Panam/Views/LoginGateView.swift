@@ -1,20 +1,19 @@
 //
-//  GoogleSignInGateView.swift
+//  LoginGateView.swift
 //  Panam
 //
 
 import SwiftUI
 
 /// Full-screen gate shown once, before the very first Face ID/passcode
-/// unlock ever runs — proves account ownership via Google sign-in. Purely a
-/// one-time setup step: completing it flips AuthState.hasCompletedGoogleLogin
-/// in the Keychain, so it's never shown again on this device, even offline
-/// and even if Gmail import is later disconnected (see EmailImportView,
-/// which only touches GmailAuthManager.signedInEmail, not this flag).
-struct GoogleSignInGateView: View {
+/// unlock ever runs — offers a real choice of how to use Panam: fully local
+/// as a guest, or signed in with Google (gmail.readonly + drive.appdata,
+/// granted once, right here). Either choice sets AuthState.authMode and
+/// proceeds past this gate for good; see ProfileView for switching from
+/// guest to Google later, or logging out of Google back to this screen.
+struct LoginGateView: View {
     let authState: AuthState
     let gmailAuth: GmailAuthManager
-    let onComplete: () -> Void
 
     @State private var isSigningIn = false
     @State private var failureMessage: String?
@@ -30,7 +29,7 @@ struct GoogleSignInGateView: View {
             Text("Welcome to Panam")
                 .font(.title2.bold())
 
-            Text("Sign in with Google once to set up Panam. After this, you'll unlock with Face ID or your passcode — no internet required.")
+            Text("Use Panam fully locally as a guest, or sign in with Google to back up to Drive and import transactions from Gmail. Either way, you'll unlock with Face ID or your passcode after this.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -44,21 +43,30 @@ struct GoogleSignInGateView: View {
                     .padding(.horizontal, 32)
             }
 
-            Button {
-                signIn()
-            } label: {
-                Group {
-                    if isSigningIn {
-                        ProgressView()
-                    } else {
-                        Text("Sign in with Google")
+            VStack(spacing: 12) {
+                Button {
+                    signInWithGoogle()
+                } label: {
+                    Group {
+                        if isSigningIn {
+                            ProgressView()
+                        } else {
+                            Text("Continue with Google")
+                        }
                     }
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(maxWidth: .infinity)
+                .buttonStyle(.borderedProminent)
+                .tint(.appPrimary)
+                .disabled(isSigningIn)
+
+                Button("Continue as Guest") {
+                    continueAsGuest()
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .disabled(isSigningIn)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.appPrimary)
-            .disabled(isSigningIn)
             .padding(.horizontal, 32)
 
             Spacer()
@@ -68,7 +76,11 @@ struct GoogleSignInGateView: View {
         .ignoresSafeArea()
     }
 
-    private func signIn() {
+    private func continueAsGuest() {
+        authState.authMode = .guest
+    }
+
+    private func signInWithGoogle() {
         guard !isSigningIn else { return }
         isSigningIn = true
         failureMessage = nil
@@ -76,8 +88,7 @@ struct GoogleSignInGateView: View {
         gmailAuth.signIn { success in
             isSigningIn = false
             if success {
-                authState.hasCompletedGoogleLogin = true
-                onComplete()
+                authState.authMode = .google
             } else {
                 failureMessage = "Sign-in failed. Please try again."
             }

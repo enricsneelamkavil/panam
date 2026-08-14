@@ -130,9 +130,6 @@ private struct CategoryRow: View {
 
     var body: some View {
         HStack {
-            Circle()
-                .fill(DashboardView.color(for: category))
-                .frame(width: 10, height: 10)
             Image(systemName: category.icon)
                 .foregroundStyle(.tint)
                 .frame(width: 28)

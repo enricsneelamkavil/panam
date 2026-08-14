@@ -198,9 +198,9 @@ private struct SubscriptionRow: View {
                 HStack(spacing: 4) {
                     Text(subscription.name)
                     if subscription.autopayEnabled {
-                        Text("(A)")
+                        Image(systemName: "a.circle.fill")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.tint)
                     }
                     if subscription.isPaused {
                         Text("Paused")

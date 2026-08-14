@@ -38,4 +38,12 @@ enum AppSettings {
         "onlinesbicard@sbicard.com",
         "alerts@notification.my.rbl.bank.in",
     ].joined(separator: "\n")
+
+    /// Newline-joined list of Gmail senders/domains to search for statement
+    /// emails (e.g. "e-Statement," "Monthly Statement"). Unlike
+    /// gmailSenderTermsKey's per-transaction-alert senders, statement
+    /// sender patterns vary a lot more bank to bank and there's no safe
+    /// common starting set — seeded empty, filled in as you find them.
+    static let statementSenderTermsKey = "gmailStatementSenderTerms"
+    static let statementSenderTermsDefault = ""
 }

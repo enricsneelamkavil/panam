@@ -51,11 +51,16 @@ struct AddEditTransactionView: View {
     @State private var paymentMethod: PaymentMethod?
     @State private var upiApp = ""
     @State private var showingVoiceEntry = false
+    @State private var showingReceiptScan = false
     @State private var isSplit = false
+    @State private var paidForSomeoneElse = false
     @State private var myPortion: Double?
     @State private var myPortionLocked = false
     @State private var splitRows: [SplitRow] = [SplitRow()]
     @State private var splitMode: SplitMode = .equal
+    @State private var paidBySomeoneElse = false
+    @State private var paidByPersonSelected: Person?
+    @State private var paidByNewPersonName = ""
 
     /// Types that carry a merchant name.
     private static let merchantEligibleTypes: Set<TransactionType> = [.expense, .refund, .taxAndFee]
@@ -184,6 +189,30 @@ struct AddEditTransactionView: View {
         }
     }
 
+    /// "Paid entirely for someone else": your portion is forced to ₹0 and the
+    /// full total is assigned to a single split-with person — collapses the
+    /// row list down to exactly one row and locks both sides of the split.
+    private func applyPaidForSomeoneElse() {
+        myPortion = 0
+        myPortionLocked = true
+        if splitRows.count > 1 { splitRows = [splitRows[0]] }
+        if splitRows.isEmpty { splitRows = [SplitRow()] }
+        splitRows[0].amount = amount
+        splitRows[0].isLocked = true
+    }
+
+    /// True when the "Someone else paid for this" toggle applies — expense-only,
+    /// creation-only (mirrors Split). No account is involved; the payer is
+    /// tracked via `paidByPerson` and a linked borrowed LendingEntry instead.
+    private var isPaidBySomeoneElse: Bool {
+        type == .expense && !isEditing && paidBySomeoneElse
+    }
+
+    /// True once a payer has been chosen or a new payer's name typed.
+    private var paidByPersonReady: Bool {
+        paidByPersonSelected != nil || !paidByNewPersonName.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     private var canSave: Bool {
         guard let amount, amount > 0 else { return false }
         if type.isTransferLike {
@@ -192,6 +221,9 @@ struct AddEditTransactionView: View {
         }
         if type == .adjustment {
             return selectedAccount != nil && !note.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        if isPaidBySomeoneElse {
+            return selectedCategory != nil && paidByPersonReady
         }
         return selectedAccount != nil && selectedCategory != nil
     }
@@ -208,15 +240,44 @@ struct AddEditTransactionView: View {
         NavigationStack {
             Form {
                 if !isEditing {
-                    Button {
-                        showingVoiceEntry = true
-                    } label: {
-                        Label("Record with Voice", systemImage: "mic.fill")
+                    HStack(spacing: 12) {
+                        Button {
+                            showingVoiceEntry = true
+                        } label: {
+                            // A plain HStack instead of Label(_:systemImage:):
+                            // .lineLimit/.minimumScaleFactor are Text-specific
+                            // modifiers — applied to a whole Label they were
+                            // shrinking/dropping the icon glyph entirely
+                            // (confirmed on-device) while the text merely
+                            // truncated instead of scaling. Scoping them to
+                            // just the Text leaves the icon untouched.
+                            HStack(spacing: 6) {
+                                Image(systemName: "mic.fill")
+                                Text("Record with Voice")
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.85)
+                            }
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.appPrimary)
+
+                        Button {
+                            showingReceiptScan = true
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "camera.viewfinder")
+                                Text("Scan Receipt")
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.85)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.appPrimary)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.appPrimary)
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets())
                 }
@@ -259,6 +320,13 @@ struct AddEditTransactionView: View {
                     }
                 }
 
+                // "Someone else paid" — expense only, creation only
+                if type == .expense && !isEditing {
+                    Section {
+                        Toggle("Someone else paid for this", isOn: $paidBySomeoneElse)
+                    }
+                }
+
                 Section {
                     if type.isTransferLike {
                         Picker("From", selection: $selectedAccount) {
@@ -280,7 +348,18 @@ struct AddEditTransactionView: View {
                                 .foregroundStyle(.red)
                         }
                     } else {
-                        if paymentMethod == .cash {
+                        if isPaidBySomeoneElse {
+                            // No account is involved — someone else's money paid for this.
+                            Picker("Paid By", selection: $paidByPersonSelected) {
+                                Text("New Person").tag(nil as Person?)
+                                ForEach(people) { person in
+                                    Text(person.name).tag(person as Person?)
+                                }
+                            }
+                            if paidByPersonSelected == nil {
+                                TextField("Name", text: $paidByNewPersonName)
+                            }
+                        } else if paymentMethod == .cash {
                             // Cash auto-assigns to the single cash account — no picker shown.
                             if cashAccount == nil {
                                 Text("No cash account found — add one in Accounts first")
@@ -313,34 +392,40 @@ struct AddEditTransactionView: View {
                 }
 
                 // Split — expense only, creation only
-                if type == .expense && !isEditing {
+                if type == .expense && !isEditing && !paidBySomeoneElse {
                     Section {
                         Toggle("Split with others", isOn: $isSplit)
                     }
 
                     if isSplit {
                         Section {
-                            Picker("Split Mode", selection: $splitMode) {
-                                ForEach(SplitMode.allCases, id: \.self) { mode in
-                                    Text(mode.rawValue).tag(mode)
-                                }
-                            }
-                            .pickerStyle(.segmented)
+                            Toggle("Paid entirely for someone else", isOn: $paidForSomeoneElse)
                         }
 
-                        Section("Your Portion") {
-                            if splitMode == .equal {
-                                LabeledContent("Your share") {
-                                    Text(myPortion ?? 0, format: Self.inrFormat)
+                        if !paidForSomeoneElse {
+                            Section {
+                                Picker("Split Mode", selection: $splitMode) {
+                                    ForEach(SplitMode.allCases, id: \.self) { mode in
+                                        Text(mode.rawValue).tag(mode)
+                                    }
                                 }
-                            } else {
-                                TextField("Your share of the total", value: myPortionBinding, format: .number)
-                                    .keyboardType(.decimalPad)
+                                .pickerStyle(.segmented)
+                            }
+
+                            Section("Your Portion") {
+                                if splitMode == .equal {
+                                    LabeledContent("Your share") {
+                                        Text(myPortion ?? 0, format: Self.inrFormat)
+                                    }
+                                } else {
+                                    TextField("Your share of the total", value: myPortionBinding, format: .number)
+                                        .keyboardType(.decimalPad)
+                                }
                             }
                         }
 
                         ForEach($splitRows) { $row in
-                            Section("Split with") {
+                            Section(paidForSomeoneElse ? "Paid For" : "Split with") {
                                 Picker("Person", selection: $row.person) {
                                     Text("New Person").tag(nil as Person?)
                                     ForEach(people) { person in
@@ -350,36 +435,40 @@ struct AddEditTransactionView: View {
                                 if row.person == nil {
                                     TextField("Name", text: $row.newPersonName)
                                 }
-                                if splitMode == .equal {
-                                    LabeledContent("Their share") {
-                                        Text(row.amount ?? 0, format: Self.inrFormat)
+                                if !paidForSomeoneElse {
+                                    if splitMode == .equal {
+                                        LabeledContent("Their share") {
+                                            Text(row.amount ?? 0, format: Self.inrFormat)
+                                        }
+                                    } else {
+                                        TextField("Their share", value: lockingBinding(for: $row), format: .number)
+                                            .keyboardType(.decimalPad)
                                     }
-                                } else {
-                                    TextField("Their share", value: lockingBinding(for: $row), format: .number)
-                                        .keyboardType(.decimalPad)
-                                }
-                                if splitRows.count > 1 {
-                                    Button("Remove", role: .destructive) {
-                                        splitRows.removeAll { $0.id == row.id }
-                                        recalcCurrentSplit()
+                                    if splitRows.count > 1 {
+                                        Button("Remove", role: .destructive) {
+                                            splitRows.removeAll { $0.id == row.id }
+                                            recalcCurrentSplit()
+                                        }
                                     }
                                 }
                             }
                         }
 
-                        Section {
-                            Button("Add Another Person") {
-                                splitRows.append(SplitRow())
-                                recalcCurrentSplit()
-                            }
-
-                            if let total = amount, abs(total - splitPortionSum) > 0.01 {
-                                HStack(alignment: .top, spacing: 8) {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                    Text("Portions (\(splitPortionSum.formatted(Self.inrFormat))) don't add up to total (\(total.formatted(Self.inrFormat)))")
-                                        .font(.caption)
+                        if !paidForSomeoneElse {
+                            Section {
+                                Button("Add Another Person") {
+                                    splitRows.append(SplitRow())
+                                    recalcCurrentSplit()
                                 }
-                                .foregroundStyle(.orange)
+
+                                if let total = amount, abs(total - splitPortionSum) > 0.01 {
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                        Text("Portions (\(splitPortionSum.formatted(Self.inrFormat))) don't add up to total (\(total.formatted(Self.inrFormat)))")
+                                            .font(.caption)
+                                    }
+                                    .foregroundStyle(.orange)
+                                }
                             }
                         }
                     }
@@ -406,8 +495,12 @@ struct AddEditTransactionView: View {
                 }
                 if newType != .expense {
                     isSplit = false
+                    paidForSomeoneElse = false
                     myPortion = nil
                     splitRows = [SplitRow()]
+                    paidBySomeoneElse = false
+                    paidByPersonSelected = nil
+                    paidByNewPersonName = ""
                 }
             }
             .onChange(of: isSplit) { _, on in
@@ -416,11 +509,22 @@ struct AddEditTransactionView: View {
                     myPortionLocked = false
                     splitRows = [SplitRow()]
                     splitMode = .equal
+                    paidForSomeoneElse = false
                 } else {
                     myPortionLocked = false
                     splitMode = .equal
+                    paidBySomeoneElse = false
                     for i in splitRows.indices { splitRows[i].isLocked = false }
                     recalcEqualSplit()
+                }
+            }
+            .onChange(of: paidForSomeoneElse) { _, on in
+                if on {
+                    applyPaidForSomeoneElse()
+                } else {
+                    myPortionLocked = false
+                    for i in splitRows.indices { splitRows[i].isLocked = false }
+                    recalcCurrentSplit()
                 }
             }
             .onChange(of: splitMode) { _, newMode in
@@ -434,7 +538,19 @@ struct AddEditTransactionView: View {
             }
             .onChange(of: amount) { _, _ in
                 guard isSplit else { return }
-                recalcCurrentSplit()
+                if paidForSomeoneElse {
+                    applyPaidForSomeoneElse()
+                } else {
+                    recalcCurrentSplit()
+                }
+            }
+            .onChange(of: paidBySomeoneElse) { _, on in
+                if on {
+                    isSplit = false
+                } else {
+                    paidByPersonSelected = nil
+                    paidByNewPersonName = ""
+                }
             }
             .onChange(of: paymentMethod) {
                 guard !type.isTransferLike else { return }
@@ -464,12 +580,17 @@ struct AddEditTransactionView: View {
             .sheet(isPresented: $showingVoiceEntry) {
                 VoiceEntrySheet { parsed in apply(parsed) }
             }
+            .sheet(isPresented: $showingReceiptScan) {
+                ReceiptScanSheet { parsed in apply(parsed) }
+            }
             .onAppear(perform: populateFromTransaction)
         }
     }
 
-    /// Pre-fills the form from a voice-parsed result. Never saves — the user
-    /// still reviews and taps Save exactly like manual entry.
+    /// Pre-fills the form from a parsed result — voice, receipt scan, or
+    /// email import all funnel through the same ParsedTransaction shape.
+    /// Never saves — the user still reviews and taps Save exactly like
+    /// manual entry.
     private func apply(_ parsed: ParsedTransaction) {
         amount = parsed.amount
         type = parsed.type.lowercased() == "income" ? .income : .expense
@@ -541,11 +662,25 @@ struct AddEditTransactionView: View {
         // Split configuration is creation-only; not editable after creation.
     }
 
+    /// Resolves the "Paid By" person for the "Someone else paid for this"
+    /// flow, creating and inserting a new Person if a name was typed instead
+    /// of an existing one being picked.
+    private func resolvePaidByPerson() -> Person? {
+        if let paidByPersonSelected { return paidByPersonSelected }
+        let trimmed = paidByNewPersonName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        let newPerson = Person(name: trimmed)
+        modelContext.insert(newPerson)
+        return newPerson
+    }
+
     private func save() {
-        guard let amount, amount > 0, let selectedAccount, let signedAmount else { return }
+        guard let amount, amount > 0, let signedAmount else { return }
+        guard isPaidBySomeoneElse || selectedAccount != nil else { return }
         let normalizedDate = Calendar.current.startOfDay(for: date)
 
         if let transaction {
+            guard let selectedAccount else { return }
             // Reverse the old transaction effect before applying new values.
             if transaction.type.isTransferLike {
                 transaction.account?.reverseTransfer(
@@ -591,7 +726,48 @@ struct AddEditTransactionView: View {
                 selectedAccount.applyTransaction(amount: signedAmount, type: type)
                 MoneyEventSync.sync(transaction: transaction, context: modelContext)
             }
+        } else if isPaidBySomeoneElse {
+            guard let payer = resolvePaidByPerson() else { return }
+
+            let newTransaction = Transaction(
+                amount: signedAmount,
+                date: normalizedDate,
+                note: note,
+                type: type,
+                account: nil,
+                category: selectedCategory
+            )
+            let trimmedUPIApp = upiApp.trimmingCharacters(in: .whitespaces)
+            newTransaction.paymentMethod = paymentMethod
+            newTransaction.upiApp = paymentMethod == .upi && !trimmedUPIApp.isEmpty ? trimmedUPIApp : nil
+            newTransaction.merchantName = merchantNameToStore
+            newTransaction.paidByPerson = payer
+
+            modelContext.insert(newTransaction)
+            // No applyTransaction call — no account moved, so no balance to update.
+            MoneyEventSync.sync(transaction: newTransaction, context: modelContext)
+
+            let entryNote: String = {
+                let cat = selectedCategory?.name ?? ""
+                if !note.isEmpty { return note }
+                if !cat.isEmpty { return cat }
+                return "Paid for you"
+            }()
+            let entry = LendingEntry(
+                amount: amount,
+                date: normalizedDate,
+                note: entryNote,
+                kind: .borrowed,
+                person: payer
+            )
+            entry.sourceTransaction = newTransaction
+            modelContext.insert(entry)
+
+            onSaved?()
+            dismiss()
+            return
         } else {
+            guard let selectedAccount else { return }
             let newTransaction = Transaction(
                 amount: signedAmount,
                 date: normalizedDate,

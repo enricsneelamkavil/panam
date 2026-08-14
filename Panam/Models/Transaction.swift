@@ -16,6 +16,11 @@ final class Transaction {
     var category: Category?
     var paymentMethod: PaymentMethod?
     var upiApp: String?
+    /// Set when this expense was paid by someone else on your behalf — no
+    /// account is involved (`account == nil`), but it still counts as your
+    /// spend (category/monthly totals) since it's your own consumption.
+    /// A linked LendingEntry(kind: .borrowed) records that you owe them.
+    var paidByPerson: Person?
     var isSplit: Bool = false
     /// The user's own share when `isSplit == true`. `amount` always holds the full total paid.
     var myPortionAmount: Double?

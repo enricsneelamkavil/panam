@@ -26,6 +26,14 @@ struct RecurringDetailView: View {
         List {
             Section {
                 LabeledContent("Cadence", value: payment.cadence.displayName)
+                if payment.autopayEnabled {
+                    HStack {
+                        Text("Autopay")
+                        Spacer()
+                        Image(systemName: "a.circle.fill")
+                            .foregroundStyle(.tint)
+                    }
+                }
                 LabeledContent("Expected Amount") {
                     Text(payment.expectedAmount, format: Self.currencyFormat)
                 }
@@ -60,7 +68,7 @@ struct RecurringDetailView: View {
                 }
             }
         }
-        .navigationTitle(payment.autopayEnabled ? "\(payment.name) (A)" : payment.name)
+        .navigationTitle(payment.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {

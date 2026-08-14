@@ -20,6 +20,8 @@
 	<string>Panam uses the microphone to let you add entries by voice.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Panam uses speech recognition to transcribe your voice entries.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Panam uses the camera to photograph receipts for scanning.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

@@ -5,6 +5,7 @@
 
 import SwiftUI
 import SwiftData
+import GoogleSignIn
 
 // Content height (pre-padding) of the two-line summary cards (Accounts,
 // Recurring, Loans), applied to single-line cards (Upcoming Dues, Lending,
@@ -45,12 +46,13 @@ struct DashboardView: View {
     @Query private var accounts: [Account]
     @Query private var recurringPayments: [RecurringPayment]
     @Query private var loans: [Loan]
+    @Query(sort: \Category.name) private var allCategories: [Category]
 
-    @State private var showingChat = false
     @State private var showingSettings = false
-    @State private var showingReorder = false
+    @State private var showingProfile = false
 
     @Environment(PrivacyState.self) private var privacyState: PrivacyState?
+    @Environment(AuthState.self) private var authState: AuthState?
 
     // MARK: - Summary period
 
@@ -231,12 +233,9 @@ struct DashboardView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
-                .padding(.bottom, 88) // clear chat FAB + tab bar
+                .padding(.bottom, 88) // clear tab bar
             }
             .background(Color(.systemGroupedBackground))
-            .overlay(alignment: .bottomTrailing) {
-                chatButton
-            }
             .navigationTitle("Dashboard")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
@@ -251,8 +250,8 @@ struct DashboardView: View {
                     }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button { showingReorder = true } label: {
-                        Label("Reorder Sections", systemImage: "arrow.up.arrow.down")
+                    Button { showingProfile = true } label: {
+                        profileToolbarIcon
                     }
                 }
                 ToolbarItem(placement: .primaryAction) {
@@ -264,13 +263,8 @@ struct DashboardView: View {
             .sheet(isPresented: $showingSettings) {
                 SettingsView()
             }
-            .sheet(isPresented: $showingReorder) {
-                DashboardReorderView()
-            }
-            .sheet(isPresented: $showingChat) {
-                FinanceChatView()
-                    .presentationDetents([.large])
-                    .presentationDragIndicator(.visible)
+            .sheet(isPresented: $showingProfile) {
+                ProfileView()
             }
         }
     }
@@ -398,38 +392,29 @@ struct DashboardView: View {
 
     // MARK: - Card 4: Spending (bar + ranked category list, one card)
 
-    /// Visually-distinct hues categories are assigned from — Apple's own
+    /// Base hues CategoryColorAssigner assigns categories from — Apple's own
     /// system palette, chosen because it's designed to read well as a set.
-    /// Order matters now: a category's index into this fixed array is what
-    /// makes `color(for:)` deterministic. Deliberately excludes gray, which
-    /// is reserved for the "Uncategorized" bucket elsewhere so it never gets
+    /// Not `fileprivate`: CategoryColorAssigner (a separate file) extends
+    /// this set with saturation/brightness variants when there are more
+    /// categories than base colors. Deliberately excludes gray, which is
+    /// reserved for the "Uncategorized" bucket elsewhere so it never gets
     /// confused with a real category's color.
-    fileprivate static let barPalette: [Color] = [
+    static let barPalette: [Color] = [
         .blue, .green, .orange, .purple, .pink, .red,
         .yellow, .teal, .indigo, .mint, .cyan, .brown,
     ]
 
-    /// Deterministic FNV-1a hash of a category's name into an index within
-    /// `0..<count`. Swift's built-in `String.hashValue`/`Hasher` are seeded
-    /// randomly per process (hash-flooding protection), so they'd give a
-    /// different index on every launch — this hand-rolled hash is stable
-    /// across launches, devices, and Swift versions instead.
-    private static func stableIndex(for name: String, count: Int) -> Int {
-        var hash: UInt64 = 0xcbf2_9ce4_8422_2325 // FNV-1a 64-bit offset basis
-        for byte in name.utf8 {
-            hash ^= UInt64(byte)
-            hash = hash &* 0x0000_0100_0000_01b3 // FNV-1a 64-bit prime
-        }
-        return Int(hash % UInt64(count))
-    }
-
     /// Color for a category's dot/segment across Top Categories, the Spend
-    /// Bar, and the full breakdown. Derived from the category's name via a
-    /// stable hash into the fixed `barPalette`, so the same category always
-    /// gets the same color — every launch, with nothing persisted to disk
-    /// and no session-only state to keep in sync.
-    static func color(for category: Category) -> Color {
-        barPalette[stableIndex(for: category.name, count: barPalette.count)]
+    /// Bar, and the full breakdown. Delegates to CategoryColorAssigner,
+    /// which assigns every *currently existing* category (not just ones
+    /// with spend in the active period — that would make the mapping
+    /// depend on which period you happened to be viewing when a category
+    /// was first encountered) a guaranteed-unique color for the session,
+    /// rather than the old per-name hash lookup, which could put two
+    /// categories on the same color (hash collisions mod a 12-color
+    /// palette, with dozens of preset categories, were routine).
+    private func color(for category: Category) -> Color {
+        CategoryColorAssigner.color(for: category, among: allCategories)
     }
 
     /// Every category with spend in the period, plus a synthetic
@@ -443,7 +428,7 @@ struct DashboardView: View {
                 id: $0.category.name,
                 name: $0.category.name,
                 total: $0.total,
-                color: Self.color(for: $0.category)
+                color: color(for: $0.category)
             )
         }
         if uncategorizedTotal > 0 {
@@ -642,22 +627,29 @@ struct DashboardView: View {
         .dashboardCard()
     }
 
-    // MARK: - Chat FAB
+    // MARK: - Toolbar: profile icon
 
-    private var chatButton: some View {
-        Button {
-            showingChat = true
-        } label: {
-            Image(systemName: "bubble.left.and.bubble.right.fill")
-                .font(.title3)
-                .foregroundStyle(.white)
-                .frame(width: 56, height: 56)
-                .background(Color.appPrimary, in: Circle())
-                .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+    /// The signed-in Google account's actual photo when available — plain
+    /// person-circle for Guest mode, or if the image never loads. Small
+    /// fixed size matching the other toolbar icons' visual footprint, circle-
+    /// cropped like ProfileView's own header photo.
+    @ViewBuilder
+    private var profileToolbarIcon: some View {
+        if authState?.authMode == .google,
+           let url = GIDSignIn.sharedInstance.currentUser?.profile?.imageURL(withDimension: 64) {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    Image(systemName: "person.crop.circle")
+                }
+            }
+            .frame(width: 22, height: 22)
+            .clipShape(Circle())
+            .accessibilityLabel("Profile")
+        } else {
+            Label("Profile", systemImage: "person.crop.circle")
         }
-        .padding(.trailing, 20)
-        .padding(.bottom, 16)
-        .accessibilityLabel("Ask Panam")
     }
 
     private func statColumn(title: String, amount: Double, color: Color) -> some View {

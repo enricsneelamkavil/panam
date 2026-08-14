@@ -12,20 +12,13 @@ import GoogleSignIn
 struct PanamApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var authState = AuthState()
+    /// authMode is a real stored property (see AuthState), so the login
+    /// gate below reacts directly to it — no separate manually-flipped
+    /// @State flag needed the way the old single-flag design required.
+    @State private var authState: AuthState
     @State private var privacyState = PrivacyState()
     @State private var gmailAuth = GmailAuthManager()
     @State private var backgroundedAt: Date?
-
-    /// Gates the one-time Google sign-in screen. Seeded from the Keychain-
-    /// persisted `hasCompletedGoogleLogin` at launch (via the explicit
-    /// `_needsGoogleSignIn = State(initialValue:)` form — plain `self.x = `
-    /// assignment inside `init()` is not a reliable way to set a @State
-    /// property's actual initial value); flipped locally afterward (not
-    /// re-read from Keychain) the moment sign-in succeeds so the UI
-    /// proceeds immediately, in the same session — Keychain-backed computed
-    /// properties aren't tracked by @Observable, only stored ones.
-    @State private var needsGoogleSignIn: Bool
 
     @AppStorage(AppSettings.biometricLockEnabledKey)
     private var biometricLockEnabled = AppSettings.biometricLockEnabledDefault
@@ -63,7 +56,11 @@ struct PanamApp: App {
 
     init() {
         GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: GmailAuthManager.clientID)
-        _needsGoogleSignIn = State(initialValue: !AuthState().hasCompletedGoogleLogin)
+        // Must run before AuthState() below reads its persisted authMode —
+        // carries an existing user's legacy Google-only login forward so
+        // this restructure doesn't log anyone out or re-prompt them.
+        AuthModeBackfill.runIfNeeded()
+        _authState = State(initialValue: AuthState())
         CategorySeeder.seedIfNeeded(sharedModelContainer.mainContext)
         MoneyEventMigration.runOneTimeMigration(context: sharedModelContainer.mainContext)
         if ProcessInfo.processInfo.arguments.contains("--seed-backfill-test") {
@@ -124,12 +121,10 @@ struct PanamApp: App {
     var body: some Scene {
         WindowGroup {
             Group {
-                if needsGoogleSignIn {
+                if authState.authMode == .none {
                     // One-time gate, ahead of everything else — no Face ID
-                    // flow, no ContentView, until this succeeds once.
-                    GoogleSignInGateView(authState: authState, gmailAuth: gmailAuth) {
-                        needsGoogleSignIn = false
-                    }
+                    // flow, no ContentView, until a choice is made here.
+                    LoginGateView(authState: authState, gmailAuth: gmailAuth)
                 } else {
                     ZStack {
                         // Always mounted, even while locked — the lock screen is a
@@ -146,14 +141,15 @@ struct PanamApp: App {
             }
             .environment(privacyState)
             .environment(gmailAuth)
+            .environment(authState)
             .onOpenURL { url in
                 GIDSignIn.sharedInstance.handle(url)
             }
             .task {
                 // Silently restores GIDSignIn's session (for
-                // gmailAuth.signedInEmail) — irrelevant to needsGoogleSignIn
+                // gmailAuth.signedInEmail) — irrelevant to authState.authMode
                 // above, which is gated purely on the persisted Keychain
-                // flag. So a returning user skips straight past this
+                // value. So a returning user skips straight past this
                 // regardless of whether restoration succeeds, fails, or
                 // never gets a chance to run offline.
                 gmailAuth.restorePreviousSignIn()
