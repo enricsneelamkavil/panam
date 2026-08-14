@@ -20,6 +20,7 @@ struct ProfileView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(AuthState.self) private var authState
     @Environment(GmailAuthManager.self) private var gmailAuth
+    @Environment(EmailFetchCoordinator.self) private var emailFetchCoordinator
     @Environment(\.modelContext) private var modelContext
 
     // MARK: Guest → Google upgrade
@@ -202,6 +203,16 @@ struct ProfileView: View {
             }
             .buttonStyle(.plain)
             .dashboardCard()
+
+            // Persistent — reflects EmailFetchCoordinator's state directly,
+            // so a fetch started inside Email Management (and still running,
+            // or cancelled) stays visible here no matter how far back out of
+            // that flow you've navigated. See EmailFetchCoordinator's doc
+            // comment for why the fetch itself lives there rather than on
+            // whichever sheet happened to start it.
+            if emailFetchCoordinator.isFetching {
+                FetchStatusPill(coordinator: emailFetchCoordinator)
+            }
         }
         .listRowBackground(Color.clear)
         .listRowInsets(EdgeInsets())
@@ -347,9 +358,52 @@ struct ProfileView: View {
     }
 }
 
+// MARK: - Persistent fetch indicator
+
+/// A slim status card for whichever batch fetch EmailFetchCoordinator is
+/// currently running — "Fetching statements… 4 of 12" plus a determinate
+/// bar and a Cancel button right there, so stopping it (or just checking on
+/// it) never requires navigating back into Email Management first.
+private struct FetchStatusPill: View {
+    let coordinator: EmailFetchCoordinator
+
+    private var kindLabel: String {
+        switch coordinator.fetchType {
+        case .transactions: return "Fetching transaction mails"
+        case .statements: return "Fetching statements"
+        case nil: return "Fetching"
+        }
+    }
+
+    private var progressText: String {
+        coordinator.totalCount > 0
+            ? "\(kindLabel)… \(coordinator.processedCount) of \(coordinator.totalCount)"
+            : "\(kindLabel)…"
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(progressText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ProgressView(value: Double(coordinator.processedCount), total: Double(max(coordinator.totalCount, 1)))
+            }
+            Button("Cancel", role: .destructive) {
+                coordinator.cancelFetch()
+            }
+            .font(.caption)
+            .buttonStyle(.bordered)
+        }
+        .padding(12)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
 #Preview {
     ProfileView()
         .environment(AuthState())
         .environment(GmailAuthManager())
+        .environment(EmailFetchCoordinator())
         .modelContainer(for: [Account.self, Category.self, Transaction.self], inMemory: true)
 }

@@ -175,6 +175,7 @@ private struct FetchProgressView: View {
 private struct TransactionMailsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(EmailFetchCoordinator.self) private var coordinator
 
     @Query(sort: \Account.name) private var accounts: [Account]
     @Query(sort: \Category.name) private var categories: [Category]
@@ -184,17 +185,16 @@ private struct TransactionMailsSheet: View {
     private var senderTermsRaw = AppSettings.gmailSenderTermsDefault
 
     @State private var newSenderTerm = ""
-    @State private var candidates: [EmailTransactionCandidate] = []
-    @State private var isFetching = false
-    @State private var fetchErrorMessage: String?
     @State private var editingCandidate: EmailTransactionCandidate?
 
-    /// Batch-fetch progress — see FetchProgressView. totalToProcess is 0
-    /// (and so the progress view stays hidden) until fetchCandidateMessages
-    /// resolves and the actual count is known.
-    @State private var processedCount = 0
-    @State private var totalToProcess = 0
-    @State private var fetchStartedAt: Date?
+    /// This sheet only owns UI-transient state (the sender-term text field,
+    /// which candidate is being edited) — the fetch itself, its progress,
+    /// and its results all live on EmailFetchCoordinator so they survive
+    /// this sheet being dismissed and re-presented, or the fetch simply
+    /// outliving the sheet entirely.
+    private var isFetchingThis: Bool {
+        coordinator.isFetching && coordinator.fetchType == .transactions
+    }
 
     private var senderTerms: [String] {
         senderTermsRaw
@@ -235,7 +235,7 @@ private struct TransactionMailsSheet: View {
                     Button {
                         performFetch()
                     } label: {
-                        if isFetching {
+                        if isFetchingThis {
                             ProgressView()
                                 .frame(maxWidth: .infinity)
                         } else {
@@ -245,30 +245,30 @@ private struct TransactionMailsSheet: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.appPrimary)
-                    .disabled(isFetching || senderTerms.isEmpty)
+                    .disabled(coordinator.isFetching || senderTerms.isEmpty)
 
-                    if isFetching && totalToProcess > 0 {
-                        FetchProgressView(current: processedCount, total: totalToProcess, startedAt: fetchStartedAt)
+                    if isFetchingThis && coordinator.totalCount > 0 {
+                        FetchProgressView(current: coordinator.processedCount, total: coordinator.totalCount, startedAt: coordinator.fetchStartedAt)
                     }
 
-                    if let fetchErrorMessage {
+                    if let fetchErrorMessage = coordinator.fetchErrorMessage {
                         Text(fetchErrorMessage)
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
                 }
 
-                if !candidates.isEmpty {
+                if !coordinator.transactionCandidates.isEmpty {
                     Section {
                         Button("Import All") {
                             importAll()
                         }
-                        .disabled(!candidates.contains(where: canQuickImport))
+                        .disabled(!coordinator.transactionCandidates.contains(where: canQuickImport))
                     } header: {
-                        Text("Review (\(candidates.count))")
+                        Text("Review (\(coordinator.transactionCandidates.count))")
                     }
 
-                    ForEach(candidates) { candidate in
+                    ForEach(coordinator.transactionCandidates) { candidate in
                         EmailCandidateRow(
                             candidate: candidate,
                             canImport: canQuickImport(candidate),
@@ -289,7 +289,7 @@ private struct TransactionMailsSheet: View {
             .sheet(item: $editingCandidate) { candidate in
                 AddEditTransactionView(prefill: candidate.parsed, refundedTransaction: candidate.matchedRefundTransaction) {
                     GmailFetcher.markImported(candidate.gmailMessageID)
-                    candidates.removeAll { $0.gmailMessageID == candidate.gmailMessageID }
+                    coordinator.removeTransactionCandidate(id: candidate.gmailMessageID)
                 }
             }
         }
@@ -308,57 +308,13 @@ private struct TransactionMailsSheet: View {
         senderTermsRaw = terms.joined(separator: "\n")
     }
 
+    /// Kicks off the fetch on the coordinator and returns immediately — the
+    /// coordinator's own Task does the work, so this sheet can be dismissed
+    /// the instant this call returns and the fetch keeps running.
     private func performFetch() {
-        isFetching = true
-        fetchErrorMessage = nil
-        processedCount = 0
-        totalToProcess = 0
-        fetchStartedAt = nil
-        Task {
-            do {
-                let messages = try await GmailFetcher.fetchCandidateMessages(senderTerms: senderTerms)
-                totalToProcess = messages.count
-                fetchStartedAt = .now
-                var results: [EmailTransactionCandidate] = []
-                for message in messages {
-                    do {
-                        let parsedRaw = try await EmailTransactionParser.parse(
-                            emailBody: message.bodyText,
-                            subject: message.subject,
-                            categories: categories,
-                            accounts: accounts
-                        )
-                        // Deterministic post-processing, not part of the
-                        // model's own output — see matchRefund's doc comment.
-                        let (parsed, matchedRefund) = EmailTransactionParser.matchRefund(
-                            for: parsedRaw, against: transactions
-                        )
-                        results.append(EmailTransactionCandidate(
-                            gmailMessageID: message.id,
-                            rawSubject: message.subject,
-                            rawSnippet: message.snippet,
-                            parsed: parsed,
-                            parseError: nil,
-                            matchedRefundTransaction: matchedRefund
-                        ))
-                    } catch {
-                        results.append(EmailTransactionCandidate(
-                            gmailMessageID: message.id,
-                            rawSubject: message.subject,
-                            rawSnippet: message.snippet,
-                            parsed: nil,
-                            parseError: error.localizedDescription
-                        ))
-                    }
-                    processedCount += 1
-                }
-                candidates = results
-                isFetching = false
-            } catch {
-                fetchErrorMessage = error.localizedDescription
-                isFetching = false
-            }
-        }
+        coordinator.startTransactionFetch(
+            senderTerms: senderTerms, categories: categories, accounts: accounts, transactions: transactions
+        )
     }
 
     /// A last-4-digits match (from the email body) is unambiguous where a
@@ -420,11 +376,11 @@ private struct TransactionMailsSheet: View {
         MoneyEventSync.sync(transaction: transaction, context: modelContext)
 
         GmailFetcher.markImported(candidate.gmailMessageID)
-        candidates.removeAll { $0.gmailMessageID == candidate.gmailMessageID }
+        coordinator.removeTransactionCandidate(id: candidate.gmailMessageID)
     }
 
     private func importAll() {
-        for candidate in candidates.filter(canQuickImport) {
+        for candidate in coordinator.transactionCandidates.filter(canQuickImport) {
             quickImport(candidate)
         }
     }
@@ -435,7 +391,7 @@ private struct TransactionMailsSheet: View {
     /// doesn't need to survive a re-fetch, so the same email is free to
     /// come back as a candidate next time.
     private func deleteCandidates(at offsets: IndexSet) {
-        candidates.remove(atOffsets: offsets)
+        coordinator.removeTransactionCandidates(at: offsets)
     }
 }
 
@@ -529,31 +485,15 @@ private struct EmailCandidateRow: View {
 /// with that email's subject/date, so it's never ambiguous which statement
 /// a password is being entered for.
 
-/// One row's state in Statement Mails' Fetched Emails list — locked/
-/// unlocked is settled up front (see StatementMailsSheet.performFetch);
-/// processing/done/failed track what happens after, whether that's
-/// automatic (already unlocked) or triggered by tapping a locked row.
-private enum FetchedEmailStatus: Equatable {
-    case locked
-    case unlocked
-    case processing
-    case done
-    case failed(String)
-}
-
-/// One Gmail-fetched statement email paired with its downloaded PDF (nil
-/// only when the attachment itself couldn't even be read as a PDF) and its
-/// current FetchedEmailStatus.
-private struct FetchedStatementEmail: Identifiable {
-    var id: String { summary.id }
-    let summary: GmailMessageSummary
-    let document: PDFDocument?
-    var status: FetchedEmailStatus
-}
+// FetchedEmailStatus and FetchedStatementEmail now live on
+// EmailFetchCoordinator (Models/EmailFetchCoordinator.swift) — its
+// fetchedEmails array is what StatementMailsSheet renders below, so the
+// types have to be visible from both places.
 
 private struct StatementMailsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(EmailFetchCoordinator.self) private var coordinator
 
     @Query(sort: \Transaction.date) private var transactions: [Transaction]
     @Query(sort: \Account.name) private var accounts: [Account]
@@ -562,26 +502,19 @@ private struct StatementMailsSheet: View {
     private var statementSenderTermsRaw = AppSettings.statementSenderTermsDefault
 
     @State private var newStatementSenderTerm = ""
-    @State private var isFetching = false
-    @State private var fetchErrorMessage: String?
-    @State private var matchedCount = 0
-    @State private var totalCount = 0
-    @State private var unmatched: [StatementReconciliationCandidate] = []
     @State private var editingCandidate: StatementReconciliationCandidate?
 
-    /// Every email the last Gmail fetch found, each tracking its own lock/
-    /// processing status — see FetchedStatementEmail below.
-    @State private var fetchedEmails: [FetchedStatementEmail] = []
-
-    /// Batch-fetch progress for the download/lock-check phase — see
-    /// FetchProgressView. Once that phase finishes, fetchedEmails' own
-    /// per-row status icons take over showing what's still happening
-    /// (auto-processing already-unlocked rows), so this doesn't track the
-    /// second phase too — that would just be a second, redundant progress
-    /// indicator for the same work the list is already showing per-row.
-    @State private var processedCount = 0
-    @State private var totalToProcess = 0
-    @State private var fetchStartedAt: Date?
+    /// The fetch itself (Gmail search, per-email lock/download status,
+    /// progress, and the matched/unmatched results) all live on
+    /// EmailFetchCoordinator now — see coordinator.fetchedEmails,
+    /// coordinator.statementMatchedCount/statementTotalCount/
+    /// statementUnmatched. This sheet only owns UI-transient state below:
+    /// the sender-term text field, which candidate is being edited, and the
+    /// manual-pick/password-prompt flow (inherently tied to a sheet being
+    /// on screen to show that prompt).
+    private var isFetchingThis: Bool {
+        coordinator.isFetching && coordinator.fetchType == .statements
+    }
 
     // Manual PDF pick (merged from the former StatementImportView)
     @State private var showingDocumentPicker = false
@@ -607,7 +540,7 @@ private struct StatementMailsSheet: View {
     }
 
     private var hasFetched: Bool {
-        totalCount > 0 || !unmatched.isEmpty
+        coordinator.statementTotalCount > 0 || !coordinator.statementUnmatched.isEmpty
     }
 
     var body: some View {
@@ -625,7 +558,7 @@ private struct StatementMailsSheet: View {
                     Button {
                         showingDocumentPicker = true
                     } label: {
-                        if isFetching {
+                        if isFetchingThis {
                             ProgressView()
                                 .frame(maxWidth: .infinity)
                         } else {
@@ -635,7 +568,7 @@ private struct StatementMailsSheet: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.appPrimary)
-                    .disabled(isFetching)
+                    .disabled(coordinator.isFetching)
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
@@ -670,7 +603,7 @@ private struct StatementMailsSheet: View {
                     Button {
                         performFetch()
                     } label: {
-                        if isFetching {
+                        if isFetchingThis {
                             ProgressView()
                                 .frame(maxWidth: .infinity)
                         } else {
@@ -680,22 +613,22 @@ private struct StatementMailsSheet: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.appPrimary)
-                    .disabled(isFetching || statementSenderTerms.isEmpty)
+                    .disabled(coordinator.isFetching || statementSenderTerms.isEmpty)
 
-                    if isFetching && totalToProcess > 0 {
-                        FetchProgressView(current: processedCount, total: totalToProcess, startedAt: fetchStartedAt)
+                    if isFetchingThis && coordinator.totalCount > 0 {
+                        FetchProgressView(current: coordinator.processedCount, total: coordinator.totalCount, startedAt: coordinator.fetchStartedAt)
                     }
 
-                    if let fetchErrorMessage {
+                    if let fetchErrorMessage = coordinator.fetchErrorMessage {
                         Text(fetchErrorMessage)
                             .font(.caption)
                             .foregroundStyle(.orange)
                     }
                 }
 
-                if !fetchedEmails.isEmpty {
+                if !coordinator.fetchedEmails.isEmpty {
                     Section {
-                        ForEach(fetchedEmails) { email in
+                        ForEach(coordinator.fetchedEmails) { email in
                             Button {
                                 rowTapped(email.id)
                             } label: {
@@ -714,19 +647,19 @@ private struct StatementMailsSheet: View {
                 if hasFetched {
                     Section {
                         LabeledContent("Matched") {
-                            Text("\(matchedCount) of \(totalCount)")
+                            Text("\(coordinator.statementMatchedCount) of \(coordinator.statementTotalCount)")
                         }
-                        if !unmatched.isEmpty {
+                        if !coordinator.statementUnmatched.isEmpty {
                             LabeledContent("Possibly Missing") {
-                                Text("\(unmatched.count)")
+                                Text("\(coordinator.statementUnmatched.count)")
                                     .foregroundStyle(.orange)
                             }
                         }
                     }
 
-                    if !unmatched.isEmpty {
+                    if !coordinator.statementUnmatched.isEmpty {
                         Section {
-                            ForEach(unmatched) { candidate in
+                            ForEach(coordinator.statementUnmatched) { candidate in
                                 StatementCandidateRow(
                                     candidate: candidate,
                                     canImport: canQuickImport(candidate),
@@ -752,7 +685,7 @@ private struct StatementMailsSheet: View {
             }
             .sheet(item: $editingCandidate) { candidate in
                 AddEditTransactionView(prefill: candidate.parsed) {
-                    unmatched.removeAll { $0.id == candidate.id }
+                    coordinator.removeStatementUnmatched(id: candidate.id)
                 }
             }
             .sheet(isPresented: $showingDocumentPicker) {
@@ -786,16 +719,15 @@ private struct StatementMailsSheet: View {
     // MARK: - Manual file pick (merged from the former StatementImportView)
 
     private func handlePicked(url: URL) {
-        fetchErrorMessage = nil
         let didAccess = url.startAccessingSecurityScopedResource()
         defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
 
         guard let data = try? Data(contentsOf: url) else {
-            fetchErrorMessage = "Couldn't read that file."
+            coordinator.reportManualStatementError("Couldn't read that file.")
             return
         }
         guard let document = PDFDocument(data: data) else {
-            fetchErrorMessage = StatementReconcilerError.pdfUnreadable.errorDescription
+            coordinator.reportManualStatementError(StatementReconcilerError.pdfUnreadable.errorDescription ?? "Couldn't open that file as a PDF.")
             return
         }
         handle(document)
@@ -809,11 +741,11 @@ private struct StatementMailsSheet: View {
     /// prompt.
     private func handle(_ document: PDFDocument) {
         guard document.isLocked else {
-            processSingleDocument(document)
+            coordinator.processManualStatement(document, accounts: accounts, transactions: transactions)
             return
         }
         if StatementReconciler.unlockWithSavedPassword(document, accounts: accounts) != nil {
-            processSingleDocument(document)
+            coordinator.processManualStatement(document, accounts: accounts, transactions: transactions)
             return
         }
         pendingLockedDocument = document
@@ -850,7 +782,7 @@ private struct StatementMailsSheet: View {
             self.passwordContinuation = nil
             passwordContinuation.resume(returning: true)
         } else {
-            processSingleDocument(document)
+            coordinator.processManualStatement(document, accounts: accounts, transactions: transactions)
         }
     }
 
@@ -871,31 +803,6 @@ private struct StatementMailsSheet: View {
         }
     }
 
-    /// Runs one manually-picked PDF through the same extract → reconcile
-    /// pipeline as the Gmail batch fetch below, writing into the very same
-    /// matched/total/unmatched state — one shared results section serves
-    /// both entry points, each overwriting whatever the other last found.
-    private func processSingleDocument(_ document: PDFDocument) {
-        isFetching = true
-        fetchErrorMessage = nil
-        Task {
-            do {
-                let text = try StatementReconciler.extractText(from: document)
-                let entries = try await StatementReconciler.extractLineItems(from: text)
-                let result = StatementReconciler.reconcile(
-                    entries: entries, against: transactions, accounts: accounts
-                )
-                matchedCount = result.matchedCount
-                totalCount = entries.count
-                unmatched = result.unmatched
-                isFetching = false
-            } catch {
-                isFetching = false
-                fetchErrorMessage = error.localizedDescription
-            }
-        }
-    }
-
     // MARK: - Sender configuration
 
     private func addStatementSenderTerm() {
@@ -911,106 +818,32 @@ private struct StatementMailsSheet: View {
         statementSenderTermsRaw = terms.joined(separator: "\n")
     }
 
-    /// Searches Gmail for every matching statement email, then — instead of
-    /// looping straight into extraction and interrupting sequentially for
-    /// each locked one with no context — first downloads every attachment
-    /// and settles each one's lock status (trying a saved Keychain
-    /// password silently) into fetchedEmails, so the whole batch shows up
-    /// as a selectable list with visible status before anything auto-
-    /// processes or prompts. Once that's populated, whatever's already
-    /// unlocked processes on its own; anything still locked just sits
-    /// there until the user taps it — see rowTapped(_:).
+    /// Kicks off the fetch on the coordinator and returns immediately — see
+    /// EmailFetchCoordinator.startStatementFetch for the actual
+    /// search/download/lock-check/reconcile pipeline, which now runs in the
+    /// coordinator's own Task rather than one scoped to this sheet.
     private func performFetch() {
-        isFetching = true
-        fetchErrorMessage = nil
-        matchedCount = 0
-        totalCount = 0
-        unmatched = []
-        fetchedEmails = []
-        processedCount = 0
-        totalToProcess = 0
-        fetchStartedAt = nil
-
-        Task {
-            do {
-                let summaries = try await GmailFetcher.searchStatementEmails(senderTerms: statementSenderTerms)
-                guard !summaries.isEmpty else {
-                    isFetching = false
-                    fetchErrorMessage = "No statement emails found for these senders in the last 6 months."
-                    return
-                }
-                totalToProcess = summaries.count
-                fetchStartedAt = .now
-
-                for summary in summaries {
-                    guard let data = try? await GmailFetcher.downloadAttachment(
-                        messageID: summary.id, attachmentID: summary.attachmentID
-                    ), let document = PDFDocument(data: data) else {
-                        fetchedEmails.append(FetchedStatementEmail(
-                            summary: summary, document: nil,
-                            status: .failed("Couldn't read this attachment as a PDF.")
-                        ))
-                        processedCount += 1
-                        continue
-                    }
-                    if document.isLocked {
-                        _ = StatementReconciler.unlockWithSavedPassword(document, accounts: accounts)
-                    }
-                    fetchedEmails.append(FetchedStatementEmail(
-                        summary: summary, document: document,
-                        status: document.isLocked ? .locked : .unlocked
-                    ))
-                    processedCount += 1
-                }
-                isFetching = false
-
-                for index in fetchedEmails.indices where fetchedEmails[index].status == .unlocked {
-                    await processRow(at: index)
-                }
-            } catch {
-                isFetching = false
-                fetchErrorMessage = error.localizedDescription
-            }
-        }
-    }
-
-    /// Runs one fetched email's already-unlocked PDF through the same
-    /// extract → reconcile pipeline as the manual pick, adding its results
-    /// into the shared matched/total/unmatched state rather than
-    /// overwriting it — every row's contribution accumulates.
-    private func processRow(at index: Int) async {
-        guard let document = fetchedEmails[index].document else { return }
-        fetchedEmails[index].status = .processing
-        do {
-            let text = try StatementReconciler.extractText(from: document)
-            let entries = try await StatementReconciler.extractLineItems(from: text)
-            let result = StatementReconciler.reconcile(
-                entries: entries, against: transactions, accounts: accounts
-            )
-            matchedCount += result.matchedCount
-            totalCount += entries.count
-            unmatched.append(contentsOf: result.unmatched)
-            fetchedEmails[index].status = .done
-        } catch {
-            fetchedEmails[index].status = .failed(error.localizedDescription)
-        }
+        coordinator.startStatementFetch(senderTerms: statementSenderTerms, accounts: accounts, transactions: transactions)
     }
 
     /// A locked row's tap target: prompts for that specific email's
     /// password (headed with its subject/date), and on success unlocks and
-    /// processes it. Anything but a still-locked row is a no-op — the
-    /// button is disabled for every other status anyway.
+    /// processes it via the coordinator. Anything but a still-locked row is
+    /// a no-op — the button is disabled for every other status anyway. This
+    /// stays here rather than on the coordinator since it's inherently tied
+    /// to a password-prompt sheet being on screen — nothing to resume if
+    /// this sheet goes away mid-prompt, same as before.
     private func rowTapped(_ id: String) {
-        guard let index = fetchedEmails.firstIndex(where: { $0.id == id }),
-              fetchedEmails[index].status == .locked,
-              let document = fetchedEmails[index].document
+        guard let index = coordinator.fetchedEmails.firstIndex(where: { $0.id == id }),
+              coordinator.fetchedEmails[index].status == .locked,
+              let document = coordinator.fetchedEmails[index].document
         else { return }
 
         Task {
-            let unlocked = await promptForPassword(document: document, emailContext: fetchedEmails[index].summary)
+            let unlocked = await promptForPassword(document: document, emailContext: coordinator.fetchedEmails[index].summary)
             guard unlocked else { return }
-            fetchedEmails[index].status = .unlocked
-            await processRow(at: index)
+            coordinator.markRowUnlocked(at: index)
+            await coordinator.processRow(at: index, accounts: accounts, transactions: transactions)
         }
     }
 
@@ -1050,16 +883,16 @@ private struct StatementMailsSheet: View {
         account.applyTransaction(amount: parsed.amount, type: .expense)
         MoneyEventSync.sync(transaction: transaction, context: modelContext)
 
-        unmatched.removeAll { $0.id == candidate.id }
+        coordinator.removeStatementUnmatched(id: candidate.id)
     }
 
     /// Dismisses candidates from this review list without importing them —
     /// nothing's been saved yet, so no confirmation needed. Purely a "stop
-    /// showing me this line" action: it doesn't touch matchedCount/
-    /// totalCount, so the "Matched X of Y" summary above still reflects
-    /// what the statement actually contained.
+    /// showing me this line" action: it doesn't touch statementMatchedCount/
+    /// statementTotalCount, so the "Matched X of Y" summary above still
+    /// reflects what the statement actually contained.
     private func deleteUnmatched(at offsets: IndexSet) {
-        unmatched.remove(atOffsets: offsets)
+        coordinator.removeStatementUnmatched(at: offsets)
     }
 }
 
@@ -1292,5 +1125,6 @@ private struct PDFPasswordPromptSheet: View {
 
 #Preview {
     EmailManagementView()
+        .environment(EmailFetchCoordinator())
         .modelContainer(for: [Account.self, Category.self, Transaction.self], inMemory: true)
 }
