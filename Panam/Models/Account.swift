@@ -23,6 +23,13 @@ final class Account {
     /// accounts only. Never shown in the UI; used solely to match an email
     /// alert's "XX1234"/"ending 1234" to the right account during import.
     var lastFourDigits: String?
+    /// Day of month (1–31) this card's statement email is expected to
+    /// land — credit card accounts only, usually a day or two after
+    /// statementDay. Drives StatementAutoFetchProcessor's once-per-launch
+    /// check: once this day arrives each cycle, it searches for and
+    /// reconciles the statement automatically instead of waiting for a
+    /// manual Fetch from Email.
+    var statementFetchDay: Int?
 
     init(name: String, type: AccountType, balance: Double = 0,
          creditLimit: Double? = nil, statementDay: Int? = nil, dueDay: Int? = nil,

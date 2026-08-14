@@ -118,6 +118,18 @@ struct PanamApp: App {
         try? context.save()
     }
 
+    /// The foreground half of auto-backup's two independent triggers — see
+    /// AutoBackupCoordinator's doc comment. Since iOS never runs arbitrary
+    /// app code while fully closed, this can only actually fire the next
+    /// time the app is opened (cold launch or resumed from background) on
+    /// or after the configured hour; it's a reliable backstop for
+    /// BackgroundBackupScheduler's opportunistic BGTaskScheduler runs, not
+    /// a true background schedule on its own.
+    private func runAutoBackupIfDue() async {
+        guard AutoBackupCoordinator.claimIfDue() else { return }
+        await DriveBackupManager().backupNow(context: sharedModelContainer.mainContext)
+    }
+
     var body: some Scene {
         WindowGroup {
             Group {
@@ -151,8 +163,23 @@ struct PanamApp: App {
                 // above, which is gated purely on the persisted Keychain
                 // value. So a returning user skips straight past this
                 // regardless of whether restoration succeeds, fails, or
-                // never gets a chance to run offline.
-                gmailAuth.restorePreviousSignIn()
+                // never gets a chance to run offline. Once restoration
+                // finishes (or fails), kick off the once-per-launch
+                // automatic statement check — it needs a valid Gmail
+                // session (or harmlessly no-ops without one) so it has to
+                // wait for this rather than racing it.
+                gmailAuth.restorePreviousSignIn {
+                    Task {
+                        await StatementAutoFetchProcessor.runIfNeeded(context: sharedModelContainer.mainContext)
+                    }
+                    Task {
+                        // Also covers plain cold launch, not just resuming
+                        // from background — the scenePhase .active case
+                        // below only fires on a *transition*, which a fresh
+                        // launch's initial state isn't.
+                        await runAutoBackupIfDue()
+                    }
+                }
             }
             .onChange(of: scenePhase) { _, newPhase in
                 switch newPhase {
@@ -168,6 +195,12 @@ struct PanamApp: App {
                     }
                 default:
                     break
+                }
+                // Independent of the auto-lock check above — resuming from
+                // background is exactly the "opened the app" moment this
+                // backstop exists for, whether or not biometric lock is on.
+                if newPhase == .active {
+                    Task { await runAutoBackupIfDue() }
                 }
             }
         }

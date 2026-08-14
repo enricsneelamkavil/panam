@@ -22,9 +22,13 @@ final class GmailAuthManager {
 
     /// Call once at app launch, after configuring GIDSignIn, to silently
     /// restore a previous session across app restarts.
-    func restorePreviousSignIn() {
+    /// - Parameter completion: Fires once restoration finishes (success or
+    ///   not) — used to sequence work that needs a valid session first, e.g.
+    ///   StatementAutoFetchProcessor's launch-time check.
+    func restorePreviousSignIn(completion: (() -> Void)? = nil) {
         GIDSignIn.sharedInstance.restorePreviousSignIn { [weak self] user, _ in
             self?.signedInEmail = user?.profile?.email
+            completion?()
         }
     }
 

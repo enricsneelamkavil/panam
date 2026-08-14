@@ -24,13 +24,19 @@ struct RecurringView: View {
 
     @State private var showingAddSheet = false
 
+    /// "Active" here means currently accruing cost, which excludes a
+    /// paused subscription even though its isActive stays true while
+    /// paused (see RecurringPayment.isPaused / SubscriptionsView's own
+    /// activeSubscriptions query) — otherwise this summary card would keep
+    /// counting something toward "active" and its monthly total right
+    /// after the user paused it.
     private var activeSubscriptionsCount: Int {
-        payments.filter { $0.isSubscription && $0.isActive }.count
+        payments.filter { $0.isSubscription && $0.isActive && !$0.isPaused }.count
     }
 
     private var totalMonthlyEquivalent: Double {
         payments
-            .filter { $0.isSubscription && $0.isActive }
+            .filter { $0.isSubscription && $0.isActive && !$0.isPaused }
             .reduce(0) { $0 + $1.monthlyEquivalentCost }
     }
 
@@ -116,9 +122,9 @@ private struct RecurringPaymentRow: View {
                     Text(payment.name)
                         .font(.body)
                     if payment.autopayEnabled {
-                        Text("(A)")
+                        Image(systemName: "a.circle.fill")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.tint)
                     }
                 }
                 Text(payment.cadence.displayName)

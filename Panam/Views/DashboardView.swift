@@ -131,30 +131,53 @@ struct DashboardView: View {
     }
 
     /// Every category with any expense-like spend in the period — .expense
-    /// and .taxAndFee alike, as long as a category is actually assigned.
+    /// and .taxAndFee alike, as long as a category is actually assigned —
+    /// netted against any .refund sharing that same category, the same way
+    /// expenseTotal above nets refunds against the aggregate: a full refund
+    /// (credit == the original debit) nets the category back to zero, a
+    /// partial one (credit == debit − a platform fee) nets it down to just
+    /// the fee, with no separate "Fees" category or extra bookkeeping —
+    /// the netting arithmetic alone produces that outcome once both
+    /// entries share a category, which is exactly what
+    /// EmailTransactionParser.matchRefund defaults a matched refund's
+    /// category to. This used to only subtract refunds from the period's
+    /// overall expenseTotal, leaving a per-category total inflated by
+    /// however much of it had actually been refunded.
     /// Uncategorized spend (category == nil) is tracked separately below
     /// instead of being silently dropped or folded into these totals.
     /// Uses `effectiveAmount` (not `amount`) so a split transaction only
     /// counts the user's own portion here — the account balance still moves
     /// by the full `amount`, but a category's "spend" is personal spend.
     private var categoryTotals: [(category: Category, total: Double)] {
-        let expenses = periodTransactions.filter {
-            $0.type.isExpenseLike && $0.category != nil && !$0.isExcludedFromFlow
+        var totals: [Category: Double] = [:]
+        for transaction in periodTransactions where !transaction.isExcludedFromFlow {
+            guard let category = transaction.category else { continue }
+            if transaction.type.isExpenseLike {
+                totals[category, default: 0] += transaction.effectiveAmount
+            } else if transaction.type == .refund {
+                totals[category, default: 0] -= transaction.effectiveAmount
+            }
         }
-        let groups = Dictionary(grouping: expenses) { $0.category! }
-        return groups
-            .map { (category: $0.key, total: $0.value.reduce(0) { $0 + $1.effectiveAmount }) }
+        return totals
+            .map { (category: $0.key, total: $0.value) }
             .sorted { $0.total > $1.total }
     }
 
     /// Expense-like spend with no category assigned at all (including
-    /// uncategorized .taxAndFee) — genuinely unattributed, as opposed to
-    /// simply falling outside a top-N cutoff. Also uses `effectiveAmount`,
-    /// for the same reason as `categoryTotals` above.
+    /// uncategorized .taxAndFee), netted against any uncategorized .refund
+    /// for the same reason categoryTotals above nets per category — this is
+    /// what keeps sum(categoryTotals) + uncategorizedTotal equal to
+    /// expenseTotal. Genuinely unattributed, as opposed to simply falling
+    /// outside a top-N cutoff. Also uses `effectiveAmount`, for the same
+    /// reason as `categoryTotals` above.
     private var uncategorizedTotal: Double {
-        periodTransactions
+        let spent = periodTransactions
             .filter { $0.type.isExpenseLike && $0.category == nil && !$0.isExcludedFromFlow }
             .reduce(0) { $0 + $1.effectiveAmount }
+        let refunded = periodTransactions
+            .filter { $0.type == .refund && $0.category == nil && !$0.isExcludedFromFlow }
+            .reduce(0) { $0 + $1.effectiveAmount }
+        return spent - refunded
     }
 
     // MARK: - Dues / lending / balances

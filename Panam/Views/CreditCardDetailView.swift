@@ -132,13 +132,25 @@ struct CreditCardDetailView: View {
         return previousStatementDate...nextStatementDate
     }
 
-    /// This statement period's expenses summed per category, largest first.
+    /// This statement period's expenses summed per category, largest first
+    /// — netted against any .refund on this card sharing that category
+    /// (same reasoning as DashboardView.categoryTotals: a full refund nets
+    /// a category to zero, a partial one nets it down to just the fee).
+    /// cardExpenses is .expense-only, so this reads straight from
+    /// allTransactions instead to also catch the matching .refund entries.
     private var categoryTotals: [(category: Category, total: Double)] {
         guard let period = statementPeriod else { return [] }
-        let expenses = cardExpenses.filter { period.contains($0.date) && $0.category != nil }
-        let groups = Dictionary(grouping: expenses) { $0.category! }
-        return groups
-            .map { (category: $0.key, total: $0.value.reduce(0) { $0 + $1.amount }) }
+        var totals: [Category: Double] = [:]
+        for transaction in allTransactions where transaction.account === account && period.contains(transaction.date) {
+            guard let category = transaction.category else { continue }
+            if transaction.type == .expense {
+                totals[category, default: 0] += transaction.amount
+            } else if transaction.type == .refund {
+                totals[category, default: 0] -= transaction.amount
+            }
+        }
+        return totals
+            .map { (category: $0.key, total: $0.value) }
             .sorted { $0.total > $1.total }
     }
 

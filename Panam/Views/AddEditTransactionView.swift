@@ -31,6 +31,15 @@ struct AddEditTransactionView: View {
     /// Pre-fills a new transaction (e.g. from email import review) — ignored when editing.
     var prefill: ParsedTransaction?
 
+    /// Set alongside `prefill` when EmailTransactionParser.matchRefund
+    /// matched this candidate to an earlier expense — linked onto the new
+    /// Transaction at save time (see save()) so it's recorded as the
+    /// refund of that specific purchase, not just a same-typed credit.
+    /// Ignored when editing, same as `prefill`, and harmless to leave set
+    /// if the user changes Type away from Refund before saving (save()
+    /// only applies it when type == .refund).
+    var refundedTransaction: Transaction?
+
     /// Called right after a successful save, before dismissal — lets callers
     /// (e.g. email import) react without this view knowing about them.
     var onSaved: (() -> Void)?
@@ -593,7 +602,7 @@ struct AddEditTransactionView: View {
     /// manual entry.
     private func apply(_ parsed: ParsedTransaction) {
         amount = parsed.amount
-        type = parsed.type.lowercased() == "income" ? .income : .expense
+        type = parsed.resolvedType
         date = parsed.resolvedDate
 
         if let methodName = parsed.paymentMethodName,
@@ -791,6 +800,9 @@ struct AddEditTransactionView: View {
                 newTransaction.paymentMethod = paymentMethod
                 newTransaction.upiApp = paymentMethod == .upi && !trimmedUPIApp.isEmpty ? trimmedUPIApp : nil
                 newTransaction.merchantName = merchantNameToStore
+                if type == .refund {
+                    newTransaction.refundedTransaction = refundedTransaction
+                }
 
                 if isSplit {
                     newTransaction.isSplit = true

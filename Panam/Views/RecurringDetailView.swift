@@ -51,7 +51,7 @@ struct RecurringDetailView: View {
                         Text(subscriptionLabel)
                     }
                 }
-                if !payment.isActive {
+                if payment.isPaused {
                     Text("Paused")
                         .foregroundStyle(.orange)
                 }

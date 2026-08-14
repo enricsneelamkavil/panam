@@ -30,15 +30,22 @@ extension RecurringPayment {
 }
 
 private enum SubscriptionTab {
-    case active, cancelled
+    case active, paused, cancelled
 }
 
-/// Active/Cancelled subscriptions. Pushed from RecurringView — no own NavigationStack.
+/// Active/Paused/Cancelled subscriptions. Pushed from RecurringView — no own NavigationStack.
 struct SubscriptionsView: View {
     @Environment(\.modelContext) private var modelContext
 
-    @Query(filter: #Predicate<RecurringPayment> { $0.isSubscription && $0.isActive })
+    /// Active means "currently accruing cost," which excludes a paused one
+    /// even though isActive itself stays true while paused — see
+    /// RecurringPayment.isPaused. Paused subscriptions get their own tab
+    /// below instead of showing up here.
+    @Query(filter: #Predicate<RecurringPayment> { $0.isSubscription && $0.isActive && !$0.isPaused })
     private var activeSubscriptions: [RecurringPayment]
+
+    @Query(filter: #Predicate<RecurringPayment> { $0.isSubscription && $0.isActive && $0.isPaused })
+    private var pausedSubscriptions: [RecurringPayment]
 
     @Query(filter: #Predicate<RecurringPayment> { $0.isSubscription && !$0.isActive })
     private var cancelledSubscriptions: [RecurringPayment]
@@ -49,26 +56,47 @@ struct SubscriptionsView: View {
         activeSubscriptions.sorted { $0.costPerDay > $1.costPerDay }
     }
 
+    private var sortedPaused: [RecurringPayment] {
+        pausedSubscriptions.sorted {
+            ($0.pausedDate ?? .distantPast) > ($1.pausedDate ?? .distantPast)
+        }
+    }
+
     private var sortedCancelled: [RecurringPayment] {
         cancelledSubscriptions.sorted {
             ($0.cancelledDate ?? .distantPast) > ($1.cancelledDate ?? .distantPast)
         }
     }
 
+    /// Deliberately built from activeSubscriptions (already paused-excluded)
+    /// rather than all isActive payments — a paused subscription isn't
+    /// currently costing anything, so it shouldn't inflate this total.
     private var totalMonthlyEquivalent: Double {
         activeSubscriptions.reduce(0) { $0 + $1.monthlyEquivalentCost }
     }
 
     var body: some View {
         List {
+            // Deliberately a bare row here, not wrapped in a Section — a
+            // Section would give it its own white card background behind
+            // the segmented control's own native pill chrome (a box behind
+            // a box). .listRowBackground(Color.clear) clears the row's own
+            // fill so only the picker's native background shows;
+            // .listRowSeparator(.hidden) matches the same treatment used
+            // for the Logout/Statement-PDF buttons, in case a future
+            // sibling row above/below this one would otherwise put a
+            // hairline against it.
             Picker("", selection: $tab) {
                 Text("Active").tag(SubscriptionTab.active)
+                Text("Paused").tag(SubscriptionTab.paused)
                 Text("Cancelled").tag(SubscriptionTab.cancelled)
             }
             .pickerStyle(.segmented)
             .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
 
-            if tab == .active {
+            switch tab {
+            case .active:
                 Section {
                     VStack(spacing: 4) {
                         Text("Monthly Equivalent")
@@ -90,25 +118,30 @@ struct SubscriptionsView: View {
                                 } label: {
                                     Label("Cancel", systemImage: "xmark.circle")
                                 }
-                                if subscription.isPaused {
-                                    Button {
-                                        restartSubscription(subscription)
-                                    } label: {
-                                        Label("Restart", systemImage: "play.circle")
-                                    }
-                                    .tint(.green)
-                                } else {
-                                    Button {
-                                        pauseSubscription(subscription)
-                                    } label: {
-                                        Label("Pause", systemImage: "pause.circle")
-                                    }
-                                    .tint(.orange)
+                                Button {
+                                    pauseSubscription(subscription)
+                                } label: {
+                                    Label("Pause", systemImage: "pause.circle")
                                 }
+                                .tint(.orange)
                             }
                     }
                 }
-            } else {
+            case .paused:
+                Section {
+                    ForEach(sortedPaused) { subscription in
+                        PausedSubscriptionRow(subscription: subscription)
+                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                Button {
+                                    restartSubscription(subscription)
+                                } label: {
+                                    Label("Restart", systemImage: "play.circle")
+                                }
+                                .tint(.green)
+                            }
+                    }
+                }
+            case .cancelled:
                 Section {
                     ForEach(sortedCancelled) { subscription in
                         CancelledSubscriptionRow(subscription: subscription)
@@ -131,6 +164,12 @@ struct SubscriptionsView: View {
                     systemImage: "arrow.triangle.2.circlepath",
                     description: Text("Mark a recurring payment as a subscription to track it here.")
                 )
+            } else if tab == .paused && pausedSubscriptions.isEmpty {
+                ContentUnavailableView(
+                    "No Paused Subscriptions",
+                    systemImage: "pause.circle",
+                    description: Text("Swipe left on an active subscription to pause it.")
+                )
             } else if tab == .cancelled && cancelledSubscriptions.isEmpty {
                 ContentUnavailableView(
                     "No Cancelled Subscriptions",
@@ -145,6 +184,7 @@ struct SubscriptionsView: View {
     private func cancelSubscription(_ payment: RecurringPayment) {
         payment.isActive = false
         payment.isPaused = false
+        payment.pausedDate = nil
         payment.cancelledDate = .now
         let now = Date.now
         for occurrence in payment.occurrences where !occurrence.isPaid && occurrence.dueDate > now {
@@ -155,14 +195,20 @@ struct SubscriptionsView: View {
     private func reactivateSubscription(_ payment: RecurringPayment) {
         payment.isActive = true
         payment.isPaused = false
+        payment.pausedDate = nil
         payment.cancelledDate = nil
         RecurringOccurrenceGenerator.generateOccurrences(for: payment, context: modelContext)
     }
 
-    /// Temporarily stops generation without cancelling — stays in the Active
-    /// tab (isActive untouched) but no new occurrences appear until Restart.
+    /// Temporarily stops generation without cancelling — isActive stays
+    /// true (so generation guards elsewhere keep treating this as "not
+    /// ended"), but it moves to the Paused tab and no new occurrences
+    /// appear until Restart. Same forward-only principle as
+    /// cancel/regenerateFutureUnpaid: only future *unpaid* occurrences are
+    /// removed, so paid history is never touched.
     private func pauseSubscription(_ payment: RecurringPayment) {
         payment.isPaused = true
+        payment.pausedDate = .now
         let now = Date.now
         for occurrence in payment.occurrences where !occurrence.isPaid && occurrence.dueDate > now {
             modelContext.delete(occurrence)
@@ -171,6 +217,7 @@ struct SubscriptionsView: View {
 
     private func restartSubscription(_ payment: RecurringPayment) {
         payment.isPaused = false
+        payment.pausedDate = nil
         RecurringOccurrenceGenerator.generateOccurrences(for: payment, context: modelContext)
     }
 }
@@ -202,14 +249,10 @@ private struct SubscriptionRow: View {
                             .font(.caption)
                             .foregroundStyle(.tint)
                     }
-                    if subscription.isPaused {
-                        Text("Paused")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.orange)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.15), in: Capsule())
-                    }
+                    // No inline "Paused" badge needed here anymore — a
+                    // paused subscription no longer appears in this Active
+                    // list at all (see activeSubscriptions' query above),
+                    // it lives in its own Paused tab instead.
                 }
                 Text("\(subscription.cadence.displayName) · \(subscription.expectedAmount.formatted(.currency(code: "INR").locale(Locale(identifier: "en_IN"))))")
                     .font(.caption)
@@ -285,6 +328,41 @@ private struct CancelledSubscriptionRow: View {
                 .foregroundStyle(.secondary)
         }
         .opacity(0.6)
+    }
+}
+
+// MARK: - Paused row
+
+/// Same shape as CancelledSubscriptionRow — name + a "since" caption built
+/// from the matching date field — but orange-toned rather than dimmed to
+/// gray, since Paused is a temporary, resumable state rather than
+/// Cancelled's final one.
+private struct PausedSubscriptionRow: View {
+    let subscription: RecurringPayment
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(subscription.name)
+
+                if let date = subscription.pausedDate {
+                    Text("Paused \(date.formatted(date: .abbreviated, time: .omitted))")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else {
+                    Text("\(subscription.cadence.displayName) · \(subscription.expectedAmount.formatted(.currency(code: "INR").locale(Locale(identifier: "en_IN"))))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            MaskableCurrencyText(amount: subscription.expectedAmount)
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .opacity(0.75)
     }
 }
 

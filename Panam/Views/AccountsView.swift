@@ -11,7 +11,6 @@ struct AccountsView: View {
     @Query(sort: \Account.createdAt) private var accounts: [Account]
 
     @State private var showingAddSheet = false
-    @State private var accountToEdit: Account?
 
     var body: some View {
         NavigationStack {
@@ -21,18 +20,10 @@ struct AccountsView: View {
                     if !accountsOfType.isEmpty {
                         Section(sectionTitle(for: type)) {
                             ForEach(accountsOfType) { account in
-                                if account.type == .creditCard {
-                                    NavigationLink {
-                                        CreditCardDetailView(account: account)
-                                    } label: {
-                                        AccountRow(account: account)
-                                    }
-                                } else {
+                                NavigationLink {
+                                    destinationView(for: account)
+                                } label: {
                                     AccountRow(account: account)
-                                        .contentShape(Rectangle())
-                                        .onTapGesture {
-                                            accountToEdit = account
-                                        }
                                 }
                             }
                             .onDelete { offsets in
@@ -66,9 +57,18 @@ struct AccountsView: View {
             .sheet(isPresented: $showingAddSheet) {
                 AddEditAccountView()
             }
-            .sheet(item: $accountToEdit) { account in
-                AddEditAccountView(account: account)
-            }
+        }
+    }
+
+    /// Credit Card rows already pushed to their own detail view — every
+    /// account type now does, so Edit lives in that destination's toolbar
+    /// instead of being the row's own tap target.
+    @ViewBuilder
+    private func destinationView(for account: Account) -> some View {
+        if account.type == .creditCard {
+            CreditCardDetailView(account: account)
+        } else {
+            AccountDetailView(account: account)
         }
     }
 

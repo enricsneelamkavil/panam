@@ -35,9 +35,20 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Button("Reorder Home") {
+                    Button {
                         showingReorder = true
+                    } label: {
+                        HStack {
+                            Text("Reorder Home")
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                 } footer: {
                     Text("Change the order of — or hide — sections on the Dashboard's Today tab.")
                 }
@@ -54,13 +65,6 @@ struct SettingsView: View {
                     }
                 }
 
-                Section {
-                    NavigationLink("Import Statement") {
-                        StatementImportView()
-                    }
-                } footer: {
-                    Text("Reconcile a bank or card statement PDF against what's already logged in Panam.")
-                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)

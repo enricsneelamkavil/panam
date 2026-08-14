@@ -20,6 +20,7 @@ struct AddEditAccountView: View {
     @State private var creditLimit: Double?
     @State private var statementDay: Int?
     @State private var dueDay: Int?
+    @State private var statementFetchDay: Int?
     @State private var annualFeeAmount: Double?
     @State private var feeWaiverSpendTarget: Double?
     @State private var feeYearStartDate: Date = .now
@@ -90,7 +91,7 @@ struct AddEditAccountView: View {
                 }
 
                 if type == .creditCard {
-                    Section("Credit Card Details") {
+                    Section {
                         TextField("Credit Limit", value: $creditLimit, format: .number)
                             .keyboardType(.decimalPad)
 
@@ -99,6 +100,13 @@ struct AddEditAccountView: View {
 
                         TextField("Due Day (1–31)", value: $dueDay, format: .number)
                             .keyboardType(.numberPad)
+
+                        TextField("Statement Email Day (1–31, optional)", value: $statementFetchDay, format: .number)
+                            .keyboardType(.numberPad)
+                    } header: {
+                        Text("Credit Card Details")
+                    } footer: {
+                        Text("If set, Panam checks for this card's statement email automatically once that day of the month arrives.")
                     }
 
                     Section {
@@ -145,6 +153,7 @@ struct AddEditAccountView: View {
         creditLimit = account.creditLimit
         statementDay = account.statementDay
         dueDay = account.dueDay
+        statementFetchDay = account.statementFetchDay
         annualFeeAmount = account.annualFeeAmount
         feeWaiverSpendTarget = account.feeWaiverSpendTarget
         feeYearStartDate = account.feeYearStartDate ?? .now
@@ -160,6 +169,7 @@ struct AddEditAccountView: View {
         // Clamp credit card day fields to 1–31; drop them for non-credit-card types.
         let clampedStatementDay = type == .creditCard ? statementDay.map { min(max($0, 1), 31) } : nil
         let clampedDueDay = type == .creditCard ? dueDay.map { min(max($0, 1), 31) } : nil
+        let clampedStatementFetchDay = type == .creditCard ? statementFetchDay.map { min(max($0, 1), 31) } : nil
         let limit = type == .creditCard ? creditLimit : nil
 
         let resolvedAnnualFee = type == .creditCard ? annualFeeAmount : nil
@@ -176,6 +186,7 @@ struct AddEditAccountView: View {
             account.creditLimit = limit
             account.statementDay = clampedStatementDay
             account.dueDay = clampedDueDay
+            account.statementFetchDay = clampedStatementFetchDay
             account.annualFeeAmount = resolvedAnnualFee
             account.feeWaiverSpendTarget = resolvedFeeTarget
             account.feeYearStartDate = resolvedFeeYearStart
@@ -189,6 +200,7 @@ struct AddEditAccountView: View {
                 statementDay: clampedStatementDay,
                 dueDay: clampedDueDay
             )
+            newAccount.statementFetchDay = clampedStatementFetchDay
             newAccount.annualFeeAmount = resolvedAnnualFee
             newAccount.feeWaiverSpendTarget = resolvedFeeTarget
             newAccount.feeYearStartDate = resolvedFeeYearStart

@@ -24,6 +24,11 @@ final class RecurringPayment {
     /// via Restart, unlike Cancelled (`isActive = false` + `cancelledDate`), which
     /// is final.
     var isPaused: Bool = false
+    /// Set when isPaused flips to true via Pause, mirroring cancelledDate —
+    /// cleared back to nil on Restart (or on Cancel/Reactivate, since those
+    /// also clear isPaused). Used to show "Paused since" in the Paused tab
+    /// the same way cancelledDate powers the Cancelled tab's caption.
+    var pausedDate: Date? = nil
 
     /// Optional person this payment is made to (e.g. a chit fund organizer).
     /// Reference only — distinct from LendingEntry and does not affect any

@@ -41,6 +41,28 @@ enum KeychainStore {
         set(Data(value.utf8), forKey: key)
     }
 
+    // MARK: - Statement PDF passwords
+
+    /// Password-protected bank/card statements use a per-issuer convention
+    /// (DOB, PAN, etc.) that's stable for a given account over time, so it's
+    /// worth letting the user save it once — keyed by the account's last-4
+    /// digits (rather than its SwiftData persistentModelID) since that's
+    /// what survives an account edit/delete-recreate and is already how
+    /// StatementReconciler matches statement lines back to an Account. Like
+    /// every other credential in this app, it lives in Keychain only — never
+    /// in a SwiftData model.
+    private static func statementPasswordKey(lastFourDigits: String) -> String {
+        "statementPassword_\(lastFourDigits)"
+    }
+
+    static func statementPassword(forLastFour lastFourDigits: String) -> String? {
+        string(forKey: statementPasswordKey(lastFourDigits: lastFourDigits))
+    }
+
+    static func setStatementPassword(_ password: String, forLastFour lastFourDigits: String) {
+        set(password, forKey: statementPasswordKey(lastFourDigits: lastFourDigits))
+    }
+
     private static func set(_ data: Data, forKey key: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

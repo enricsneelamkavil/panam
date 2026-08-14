@@ -38,4 +38,23 @@ extension ParsedTransaction {
         fmt.dateFormat = "yyyy-MM-dd"
         return fmt.date(from: str) ?? .now
     }
+
+    /// Resolves the raw `type` string to a concrete TransactionType.
+    /// "refund" is never something a parser's model instructions ask for
+    /// directly on email import (see EmailTransactionParser) — it only
+    /// appears there after EmailTransactionParser.matchRefund reclassifies
+    /// an "income" candidate. ReceiptTransactionParser's model, on the
+    /// other hand, can produce "refund" directly when a receipt itself
+    /// reads as one. Either way, this is the one place that string gets
+    /// turned into an actual TransactionType, so every call site —
+    /// AddEditTransactionView.apply(_:), EmailManagementView's quick-import
+    /// — treats "refund" consistently instead of each re-deriving its own
+    /// (previously binary income/expense) mapping.
+    var resolvedType: TransactionType {
+        switch type.lowercased() {
+        case "income": .income
+        case "refund": .refund
+        default: .expense
+        }
+    }
 }

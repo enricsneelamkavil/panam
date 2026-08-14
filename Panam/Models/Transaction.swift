@@ -31,6 +31,12 @@ final class Transaction {
     /// Bill Payment or Cash Advance — settling card debt already counted as spend at purchase
     /// time, not new spending. Not set on the separate fee transaction, which is a genuine new cost.
     var isCardPaymentSettlement: Bool = false
+    /// Set only on a .refund transaction — the original expense this credit
+    /// refunds (see EmailTransactionParser.matchRefund). Lets the review UI
+    /// show which purchase a matched refund belongs to, is where the
+    /// refund's category default comes from, and marks that expense as
+    /// already-matched so a later refund search doesn't offer it again.
+    var refundedTransaction: Transaction?
 
     @Relationship(deleteRule: .cascade, inverse: \SplitAllocation.transaction)
     var splitAllocations: [SplitAllocation] = []

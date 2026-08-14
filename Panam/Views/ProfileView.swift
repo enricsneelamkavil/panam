@@ -30,6 +30,11 @@ struct ProfileView: View {
     // MARK: Card sheet
 
     @State private var showingEmailManagementSheet = false
+    /// Pending StatementAutoFetchProcessor notices — read fresh whenever
+    /// this screen appears (ProfileView is presented as a sheet, so that's
+    /// every time it's relevant) and again once Email Management is
+    /// dismissed, since opening it is what marks them read.
+    @State private var pendingAutoFetchNoticeCount = 0
 
     // MARK: Backup & Restore (moved from BackupRestoreView)
 
@@ -75,7 +80,12 @@ struct ProfileView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .sheet(isPresented: $showingEmailManagementSheet) {
+            .onAppear {
+                pendingAutoFetchNoticeCount = StatementAutoFetchStore.notices.count
+            }
+            .sheet(isPresented: $showingEmailManagementSheet, onDismiss: {
+                pendingAutoFetchNoticeCount = StatementAutoFetchStore.notices.count
+            }) {
                 EmailManagementView()
             }
             .alert("Restore from Backup?", isPresented: $showingRestoreConfirmation) {
@@ -188,7 +198,7 @@ struct ProfileView: View {
             Button {
                 showingEmailManagementSheet = true
             } label: {
-                cardLabel(title: "Email Management")
+                cardLabel(title: "Email Management", badgeCount: pendingAutoFetchNoticeCount)
             }
             .buttonStyle(.plain)
             .dashboardCard()
@@ -197,11 +207,19 @@ struct ProfileView: View {
         .listRowInsets(EdgeInsets())
     }
 
-    private func cardLabel(title: String) -> some View {
+    private func cardLabel(title: String, badgeCount: Int = 0) -> some View {
         HStack {
             Text(title)
                 .font(.headline)
                 .foregroundStyle(.primary)
+            if badgeCount > 0 {
+                Text("\(badgeCount)")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.appPrimary, in: Capsule())
+            }
             Spacer()
             Image(systemName: "chevron.right")
                 .font(.caption2)
@@ -280,27 +298,52 @@ struct ProfileView: View {
                 }
             }
         } footer: {
-            Text("Backs up automatically once a day in the background, around the selected time. iOS decides the exact moment based on device usage and battery — the actual backup can land a few hours later than scheduled (or occasionally not run at all if the app is never backgrounded). That's normal background-task behavior, not a malfunction.")
+            Text("Backs up automatically once a day, two ways: iOS may run it in the background around the selected time — timing isn't exact, and it can land hours late or get skipped some days, which is normal background-task behavior, not a malfunction — and if that hasn't happened yet, opening the app on or after that time backs up right then instead, silently, as a reliable catch-up. Either way counts as the day's backup, so it won't run a second time until tomorrow.")
         }
     }
 
     // MARK: - Google mode: Logout
 
-    /// Filled, prominent, red — a critical account action, not a plain
-    /// destructive list row like Restore above (that's still reversible by
-    /// restoring again; logging out ends the whole session).
+    /// Filled, prominent, red, full-width, plain — a critical account
+    /// action that reads as a real button, not a list row like Restore
+    /// above. Lives as real Form row content (scrolls with everything
+    /// else, no sticky positioning, no surface of its own) with
+    /// .listRowBackground(Color.clear)/.listRowInsets(EdgeInsets()) so it
+    /// reads as a plain full-bleed button rather than a boxed list row —
+    /// same clash backupRestoreSections' comment above calls out for
+    /// "Backup Now" — plus .listRowSeparator(.hidden), the modifier that
+    /// was actually missing before: clearing a row's background/insets
+    /// doesn't touch List's separator hairline, that's a distinct
+    /// modifier, so without it a line still showed beneath the button.
+    @ViewBuilder
     private var logoutSection: some View {
-        Section {
-            Button("Logout", role: .destructive) {
-                gmailAuth.signOut()
-                authState.authMode = .none
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
-            .frame(maxWidth: .infinity, alignment: .center)
-        } footer: {
-            Text("Signs out of Google entirely and returns to the sign-in screen. Your local data isn't affected.")
+        // .frame(maxWidth: .infinity) has to be on the label content, not
+        // chained onto the Button itself — .borderedProminent draws its
+        // capsule background sized to the label's own reported width, so a
+        // frame applied only to the outer Button (as Button(_:role:action:)
+        // forces, since it can't be reached inside) widens the tap target
+        // but leaves the visible red pill hugging the text. Same fix as
+        // "Sign in with Google" above: use the label-closure initializer so
+        // the frame lands on the Text before .buttonStyle ever sees it.
+        Button(role: .destructive) {
+            gmailAuth.signOut()
+            authState.authMode = .none
+        } label: {
+            Text("Logout")
+                .frame(maxWidth: .infinity)
         }
+        .buttonStyle(.borderedProminent)
+        .tint(.red)
+        .listRowBackground(Color.clear)
+        .listRowInsets(EdgeInsets())
+        .listRowSeparator(.hidden)
+
+        Text("Signs out of Google entirely and returns to the sign-in screen. Your local data isn't affected.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
     }
 }
 

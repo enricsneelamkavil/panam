@@ -79,6 +79,16 @@ enum BackgroundBackupScheduler {
         scheduleNext()
 
         let work = Task {
+            // Claimed here, before doing any work — see AutoBackupCoordinator.
+            // PanamApp's on-active check shares this same claim, so whichever
+            // of the two triggers gets here first for today is the one that
+            // actually runs; if the foreground check already claimed today
+            // (e.g. the app was opened and backed up before this background
+            // task ever got a chance to fire), this just completes as a no-op.
+            guard AutoBackupCoordinator.claimIfDue() else {
+                task.setTaskCompleted(success: true)
+                return
+            }
             await restorePreviousGoogleSignInIfNeeded()
             let context = ModelContext(container)
             await DriveBackupManager().backupNow(context: context)

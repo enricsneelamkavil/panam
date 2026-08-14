@@ -24,6 +24,14 @@ enum AppSettings {
     static let autoBackupHourKey = "autoBackupHour"
     static let autoBackupHourDefault = 3
 
+    /// Last calendar date an automatic backup actually ran, set by whichever
+    /// trigger gets there first each day — BackgroundBackupScheduler's
+    /// BGTaskScheduler handler, or PanamApp's on-scenePhase-active check.
+    /// See AutoBackupCoordinator.claimIfDue: both read/write this same key
+    /// so the second trigger to fire on a given day sees today's already
+    /// claimed and skips, rather than backing up twice.
+    static let lastAutoBackupDateKey = "lastAutoBackupDate"
+
     /// Newline-joined list of Gmail sender addresses/domains/keywords to search
     /// for transaction alert emails (e.g. "alerts@hdfcbank.net"). Seeded with a
     /// starting set of common Indian bank alert senders on first launch of the
@@ -46,4 +54,16 @@ enum AppSettings {
     /// common starting set — seeded empty, filled in as you find them.
     static let statementSenderTermsKey = "gmailStatementSenderTerms"
     static let statementSenderTermsDefault = ""
+
+    /// Splits a newline-joined sender-terms value (gmailSenderTermsKey /
+    /// statementSenderTermsKey) into a trimmed, non-empty list — the same
+    /// logic every sender-term screen already applies inline to its
+    /// @AppStorage-backed raw string. Factored out here so non-View code
+    /// (StatementAutoFetchProcessor, which reads the raw UserDefaults value
+    /// directly since it can't use @AppStorage) can reuse it too.
+    static func parseSenderTerms(_ raw: String) -> [String] {
+        raw.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
 }
