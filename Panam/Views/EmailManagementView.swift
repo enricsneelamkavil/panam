@@ -304,8 +304,7 @@ private struct TransactionMailsSheet: View {
             }
             .sheet(item: $editingCandidate) { candidate in
                 AddEditTransactionView(prefill: candidate.parsed, refundedTransaction: candidate.matchedRefundTransaction) {
-                    GmailFetcher.markImported(candidate.gmailMessageID)
-                    coordinator.removeTransactionCandidate(id: candidate.gmailMessageID)
+                    coordinator.markCandidateImported(candidate)
                 }
             }
         }
@@ -391,8 +390,7 @@ private struct TransactionMailsSheet: View {
         account.applyTransaction(amount: parsed.amount, type: type)
         MoneyEventSync.sync(transaction: transaction, context: modelContext)
 
-        GmailFetcher.markImported(candidate.gmailMessageID)
-        coordinator.removeTransactionCandidate(id: candidate.gmailMessageID)
+        coordinator.markCandidateImported(candidate)
     }
 
     private func importAll() {
@@ -524,6 +522,7 @@ private struct StatementMailsSheet: View {
 
     @Query(sort: \Transaction.date) private var transactions: [Transaction]
     @Query(sort: \Account.name) private var accounts: [Account]
+    @Query(sort: \Category.name) private var categories: [Category]
 
     @AppStorage(AppSettings.statementSenderTermsKey)
     private var statementSenderTermsRaw = AppSettings.statementSenderTermsDefault
@@ -711,7 +710,7 @@ private struct StatementMailsSheet: View {
                 }
             }
             .sheet(item: $editingCandidate) { candidate in
-                AddEditTransactionView(prefill: candidate.parsed) {
+                AddEditTransactionView(prefill: candidate.parsed, refundedTransaction: candidate.matchedRefundTransaction) {
                     coordinator.removeStatementUnmatched(id: candidate.id)
                 }
             }
@@ -876,15 +875,27 @@ private struct StatementMailsSheet: View {
 
     /// Unlike Transaction Mails' quick-import (which requires both an
     /// account AND a category to resolve), a statement line never carries
-    /// a category — StatementReconciler doesn't ask the model to guess one
-    /// (see StatementLineItem). Requiring one here would make quick-import
-    /// permanently unusable, so this only requires the account to resolve;
-    /// the transaction is created uncategorized, same as any manually
+    /// its own category guess — StatementReconciler doesn't ask the model
+    /// for one (see StatementLineItem). Requiring one here would make
+    /// quick-import permanently unusable, so this only requires the
+    /// account to resolve; the transaction is created uncategorized unless
+    /// resolveCategory below happens to find one, same as any manually
     /// entered one left that way.
     private func resolveAccount(_ parsed: ParsedTransaction) -> Account? {
         let trimmed = parsed.lastFourDigits?.trimmingCharacters(in: .whitespaces) ?? ""
         guard !trimmed.isEmpty else { return nil }
         return accounts.first { $0.lastFourDigits == trimmed }
+    }
+
+    /// Only ever non-nil for a refund-matched credit line — matchRefund
+    /// (StatementReconciler.candidate(for:accounts:transactions:)) fills in
+    /// categoryName from the matched debit's own category when it
+    /// reclassifies a CR as .refund. A plain debit/unmatched-credit
+    /// candidate has no categoryName at all, so this quietly resolves to
+    /// nil for those, same as before this existed.
+    private func resolveCategory(_ name: String?) -> Category? {
+        guard let name else { return nil }
+        return categories.first { $0.name.compare(name, options: .caseInsensitive) == .orderedSame }
     }
 
     private func canQuickImport(_ candidate: StatementReconciliationCandidate) -> Bool {
@@ -900,19 +911,30 @@ private struct StatementMailsSheet: View {
         let parsed = candidate.parsed
         guard let account = resolveAccount(parsed) else { return }
 
+        // Same resolvedType-driven shape TransactionMailsSheet's
+        // quickImport uses — a statement candidate can now be .expense,
+        // .income, or .refund (see StatementReconciler.candidate(for:
+        // accounts:transactions:)), not just .expense, so this can no
+        // longer hardcode the type.
+        let type = parsed.resolvedType
         let transaction = Transaction(
             amount: parsed.amount,
             date: parsed.resolvedDate,
             note: parsed.note ?? "",
-            type: .expense,
+            type: type,
             account: account,
-            category: nil
+            category: resolveCategory(parsed.categoryName)
         )
-        let trimmedMerchant = parsed.merchantName?.trimmingCharacters(in: .whitespaces) ?? ""
-        transaction.merchantName = trimmedMerchant.isEmpty ? nil : trimmedMerchant
+        if type == .expense || type == .refund {
+            let trimmedMerchant = parsed.merchantName?.trimmingCharacters(in: .whitespaces) ?? ""
+            transaction.merchantName = trimmedMerchant.isEmpty ? nil : trimmedMerchant
+        }
+        if type == .refund {
+            transaction.refundedTransaction = candidate.matchedRefundTransaction
+        }
 
         modelContext.insert(transaction)
-        account.applyTransaction(amount: parsed.amount, type: .expense)
+        account.applyTransaction(amount: parsed.amount, type: type)
         MoneyEventSync.sync(transaction: transaction, context: modelContext)
 
         coordinator.removeStatementUnmatched(id: candidate.id)
@@ -987,7 +1009,12 @@ private struct FetchedEmailRow: View {
 
 /// Same row shape as EmailCandidateRow, adapted for a statement line — no
 /// parse-failure state (only the whole-email-batch fetch can fail, not an
-/// individual reconciled line).
+/// individual reconciled line), but the same matched-refund/unmatched-
+/// income label EmailCandidateRow shows: a CR line StatementReconciler
+/// already ran through matchRefund shows "Matched refund for…" when it
+/// found the original debit, or an "Income — no matching debit found"
+/// flag when it didn't, so an unmatched credit is never presented as
+/// settled income without a second look.
 private struct StatementCandidateRow: View {
     let candidate: StatementReconciliationCandidate
     let canImport: Bool
@@ -1019,6 +1046,22 @@ private struct StatementCandidateRow: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
 
+            if let matched = candidate.matchedRefundTransaction {
+                Label("Matched refund for \(refundLabel(for: matched))", systemImage: "arrow.uturn.left")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.blue)
+            } else if candidate.parsed.resolvedType == .income {
+                // matchRefund already ran (StatementReconciler.candidate(
+                // for:accounts:transactions:)) and found no matching debit
+                // — same "flag it, don't quietly call it settled income"
+                // treatment EmailCandidateRow gives an unmatched credit
+                // alert, for the same reason: the matching debit could
+                // predate tracking, or never have been a card charge at all.
+                Label("Income — no matching debit found, double-check", systemImage: "arrow.down.circle")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
+
             HStack {
                 Button("Edit", action: onEdit)
                     .buttonStyle(.bordered)
@@ -1031,6 +1074,18 @@ private struct StatementCandidateRow: View {
             .font(.caption)
         }
         .padding(.vertical, 4)
+    }
+
+    /// Identifies the matched original expense for the "Matched refund
+    /// for…" label — merchant name first, falling back to its note, so
+    /// there's always something readable even when neither is set. Same
+    /// logic as EmailCandidateRow.refundLabel(for:), duplicated rather than
+    /// shared since both rows are already independent, private, near-
+    /// identical types by design (see this type's doc comment).
+    private func refundLabel(for transaction: Transaction) -> String {
+        if let merchant = transaction.merchantName, !merchant.isEmpty { return merchant }
+        if !transaction.note.isEmpty { return transaction.note }
+        return transaction.category?.name ?? "a purchase"
     }
 }
 
@@ -1304,6 +1359,7 @@ private struct DematStatementsSheet: View {
                                 DematHoldingRow(
                                     candidate: candidate,
                                     onChangeMatch: { reassigningCandidate = candidate },
+                                    onCurrentValueChange: { coordinator.updateDematCandidateCurrentValue(candidate.id, to: $0) },
                                     onConfirm: { confirm(candidate) },
                                     onSkip: { coordinator.skipDematCandidate(candidate) }
                                 )
@@ -1423,40 +1479,64 @@ private struct DematStatementsSheet: View {
     }
 }
 
-/// One review row: instrument name, its parsed invested/current values (for
-/// a sanity check against whichever Investment is suggested), and the
-/// current match — tap it to re-pick, or Confirm/Skip outright.
+/// One review row: instrument name, the matched Investment's own invested
+/// amount (read-only reference — never edited here, see
+/// DematHoldingReviewCandidate.investedAmount), an editable current-value
+/// field (OCR/extraction can misread a digit, so this is a correction
+/// point, not just a display), and the return computed live from the two —
+/// same signed-amount-plus-percent presentation InvestmentDetailView uses
+/// for a confirmed Investment's own Returns section, and the same editable-
+/// amount-with-immediate-feedback shape PaymentConfirmationSheet uses for
+/// actualAmount. Below that, the current match — tap it to re-pick, or
+/// Confirm/Skip outright.
 private struct DematHoldingRow: View {
     let candidate: DematHoldingReviewCandidate
     let onChangeMatch: () -> Void
+    let onCurrentValueChange: (Double?) -> Void
     let onConfirm: () -> Void
     let onSkip: () -> Void
+
+    @State private var editedCurrentValue: Double?
 
     private static let inrFormat = FloatingPointFormatStyle<Double>.Currency
         .currency(code: "INR")
         .locale(Locale(identifier: "en_IN"))
+
+    private var investedAmount: Double? { candidate.investedAmount }
+
+    private var returnsAmount: Double? {
+        guard let editedCurrentValue, let investedAmount else { return nil }
+        return editedCurrentValue - investedAmount
+    }
+
+    private var returnsPercent: Double? {
+        guard let returnsAmount, let investedAmount, investedAmount != 0 else { return nil }
+        return (returnsAmount / investedAmount) * 100
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(candidate.holding.instrumentName)
                 .font(.headline)
 
-            HStack {
-                if let invested = candidate.investedAmount {
-                    Text("Invested \(invested, format: Self.inrFormat)")
-                }
-                Spacer()
-                if let current = candidate.currentValue {
-                    Text("Now \(current, format: Self.inrFormat)")
+            if let investedAmount {
+                LabeledContent("Invested") {
+                    Text(investedAmount, format: Self.inrFormat)
                 }
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
 
-            if let units = candidate.holding.unitsOrQuantity, !units.isEmpty {
-                Text("\(units) units")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+            LabeledContent("Current Value") {
+                TextField("Current Value", value: $editedCurrentValue, format: .number)
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.trailing)
+            }
+
+            if let returnsAmount, let returnsPercent {
+                LabeledContent("Returns") {
+                    Text("\(returnsAmount >= 0 ? "+" : "−")\(abs(returnsAmount), format: Self.inrFormat) (\(returnsPercent >= 0 ? "+" : "−")\(abs(returnsPercent).formatted(.number.precision(.fractionLength(1))))%)")
+                        .foregroundStyle(returnsAmount >= 0 ? .green : .red)
+                }
+                .font(.caption)
             }
 
             Button(action: onChangeMatch) {
@@ -1481,6 +1561,10 @@ private struct DematHoldingRow: View {
             .font(.caption)
         }
         .padding(.vertical, 4)
+        .onAppear { editedCurrentValue = candidate.currentValue }
+        .onChange(of: editedCurrentValue) { _, newValue in
+            onCurrentValueChange(newValue)
+        }
     }
 }
 

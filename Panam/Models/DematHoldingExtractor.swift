@@ -9,10 +9,14 @@ import FoundationModels
 // MARK: - Extraction schema
 
 /// One holding line as printed on a demat/broker portfolio statement (e.g.
-/// Upstox). The two value fields are deliberately kept as raw strings
-/// rather than Double — statement formatting for these columns varies
-/// enough (₹ symbols, thousands separators, parenthesized negatives) that
-/// letting the model report exactly what's printed and parsing it
+/// Upstox). Only the name and current value are extracted — the invested
+/// amount is never taken from the statement at all; it already exists on
+/// the matched Investment record (see Investment.investedValue), computed
+/// from the app's own logged contributions/lumpsum entry, which is the only
+/// invested figure Panam trusts. currentValueString is deliberately kept as
+/// a raw string rather than Double — statement formatting for this column
+/// varies enough (₹ symbols, thousands separators, parenthesized negatives)
+/// that letting the model report exactly what's printed and parsing it
 /// deterministically afterward (see DematHoldingExtractor.parseAmount) is
 /// more robust than asking the model to also normalize it, the same
 /// reasoning StatementLineItem's dateString takes for dates.
@@ -21,16 +25,10 @@ struct DematHolding {
     @Guide(description: "The exact name of the stock/mutual fund/instrument as printed on the statement — e.g. \"RELIANCE INDUSTRIES LTD\" or \"HDFC Flexi Cap Fund\"")
     var instrumentName: String
 
-    @Guide(description: "The total amount originally invested / cost value for this holding, exactly as printed on the statement (keep any currency symbols, commas, or decimals as printed — do not convert or normalize it)")
-    var investedAmountString: String
-
-    @Guide(description: "The current market value of this holding as of the statement date, exactly as printed on the statement")
+    @Guide(description: "The current market value of this holding as of the statement date, exactly as printed on the statement (keep any currency symbols, commas, or decimals as printed — do not convert or normalize it)")
     var currentValueString: String
 
-    @Guide(description: "The number of units/shares/quantity held for this holding, exactly as printed, or nil if the statement doesn't show a quantity for this row")
-    var unitsOrQuantity: String?
-
-    @Guide(description: "Only true if this is a real holding row from the statement's actual portfolio/holdings table — a specific instrument name with its own invested and current value. False for a portfolio summary/total row, a disclaimer, a header, a footer, or any other non-holding text, even if it contains numbers that look like amounts.")
+    @Guide(description: "Only true if this is a real holding row from the statement's actual portfolio/holdings table — a specific instrument name with its own current value. False for a portfolio summary/total row, a disclaimer, a header, a footer, or any other non-holding text, even if it contains numbers that look like amounts.")
     var isGenuineHolding: Bool
 }
 
@@ -45,17 +43,26 @@ struct DematHoldingExtraction {
 // MARK: - Review candidate
 
 /// One extracted holding paired with its best-guess existing Investment
-/// (nil if nothing matched closely enough to guess) and its two amount
-/// fields already parsed to Double for display. DematStatementsSheet shows
-/// every one of these for confirmation before anything on Investment
-/// actually changes — see DematHoldingExtractor.matchInvestment(for:in:)
-/// and EmailFetchCoordinator.confirmDematMatch.
+/// (nil if nothing matched closely enough to guess) and the extracted
+/// current value, already parsed to Double for display and editing.
+/// DematStatementsSheet shows every one of these for confirmation before
+/// anything on Investment actually changes — see
+/// DematHoldingExtractor.matchInvestment(for:in:) and
+/// EmailFetchCoordinator.confirmDematMatch. currentValue is a var, not a
+/// let: the review row lets it be corrected in place (OCR/extraction can
+/// misread a digit) before it's ever written to Investment.currentValue.
 struct DematHoldingReviewCandidate: Identifiable {
     let id = UUID()
     let holding: DematHolding
-    let investedAmount: Double?
-    let currentValue: Double?
+    var currentValue: Double?
     var suggestedInvestment: Investment?
+
+    /// The matched Investment's own invested amount — a read-only reference
+    /// for the review row, never edited here. Always the app's own
+    /// Investment.investedValue (contributions/lumpsum Panam already knows
+    /// about), never anything parsed from the statement — see DematHolding's
+    /// doc comment.
+    var investedAmount: Double? { suggestedInvestment?.investedValue }
 }
 
 enum DematHoldingExtractor {
@@ -67,20 +74,20 @@ enum DematHoldingExtractor {
 
         Find every individual holding line in this section — this is \
         usually a table listing each stock, mutual fund, or other \
-        instrument the customer holds, along with how much was invested and \
-        what it's currently worth. Extract EVERY holding row in THIS \
-        section as its own entry — do not summarize, do not report only a \
-        few examples, and do not merge multiple holdings into one.
+        instrument the customer holds, along with what it's currently \
+        worth. Extract EVERY holding row in THIS section as its own entry \
+        — do not summarize, do not report only a few examples, and do not \
+        merge multiple holdings into one.
 
         Ignore rows that aren't individual holdings: statement headers, \
         column headers, portfolio total/summary rows, page footers, \
         disclaimers, and marketing text.
 
         Only extract rows from the actual holdings/portfolio table — each \
-        with a specific instrument name, an invested amount, and a current \
-        value. Do NOT extract: the portfolio grand total, asset-allocation \
-        summary rows, disclaimers/legal text, or promotional inserts, even \
-        if they contain rupee amounts.
+        with a specific instrument name and a current value. Do NOT \
+        extract: the portfolio grand total, asset-allocation summary rows, \
+        disclaimers/legal text, or promotional inserts, even if they \
+        contain rupee amounts.
 
         A genuine holding row always names a specific instrument (a \
         company, a fund, a bond). A row with no instrument name — just a \
@@ -96,7 +103,7 @@ enum DematHoldingExtractor {
 
         The text may contain OCR/extraction noise — misaligned columns, odd \
         line breaks, stray whitespace — use your best judgment to recover \
-        each row's real instrument name, invested amount, and current value.
+        each row's real instrument name and current value.
         """
 
     // MARK: Extraction
@@ -156,8 +163,8 @@ enum DematHoldingExtractor {
 
     /// Mirrors StatementReconciler.amountAppearsInSource's role, adapted to
     /// a holding's defining feature being its name rather than a single
-    /// amount (investedAmountString/currentValueString are two loosely-
-    /// formatted strings, ill-suited to the same digit-boundary check).
+    /// amount (currentValueString is a loosely-formatted string, ill-suited
+    /// to the same digit-boundary check).
     /// Checked as a case-insensitive substring on just the instrument's
     /// first word (when long enough to be distinctive) rather than the full
     /// name, so the model lightly trimming a trailing "LTD"/"LIMITED" —
@@ -188,11 +195,11 @@ enum DematHoldingExtractor {
 
     // MARK: Amount parsing
 
-    /// Permissive currency-string parser for investedAmountString/
-    /// currentValueString — strips everything but digits, a single decimal
-    /// point, and a leading minus sign (currency symbols, thousands
-    /// commas/spaces, "Rs.", any trailing suffix a statement adds). Returns
-    /// nil for anything that doesn't leave at least one digit behind.
+    /// Permissive currency-string parser for currentValueString — strips
+    /// everything but digits, a single decimal point, and a leading minus
+    /// sign (currency symbols, thousands commas/spaces, "Rs.", any trailing
+    /// suffix a statement adds). Returns nil for anything that doesn't
+    /// leave at least one digit behind.
     static func parseAmount(_ raw: String) -> Double? {
         var cleaned = ""
         var seenDecimalPoint = false

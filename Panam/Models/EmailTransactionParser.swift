@@ -12,14 +12,42 @@ enum EmailParsingError: LocalizedError {
     }
 }
 
+/// The model's full response for one transaction-alert email — a flat
+/// list, not a single transaction, mirroring StatementExtraction's array
+/// pattern: a daily/weekly digest from a card issuer can legitimately
+/// bundle several separate charges into one email, and wrapping the array
+/// in its own @Generable type (rather than generating [ParsedTransaction]
+/// directly) is what lets LanguageModelSession target a list-of-many-items
+/// response at all — same reasoning as StatementExtraction/
+/// DematHoldingExtraction.
+@Generable
+struct ParsedTransactionBatch {
+    @Guide(description: "Every distinct transaction alert found in this email, in the order they appear. Most transaction emails report exactly one transaction — extract exactly one entry in that case. A digest-style email can bundle several separate charges into one message; extract every one of them as its own entry, never merged, summarized, or reduced to just the first or largest.")
+    var entries: [ParsedTransaction]
+}
+
 enum EmailTransactionParser {
-    /// Parses a bank/card transaction-alert email into structured fields
-    /// using the on-device foundation model — same pattern as
-    /// VoiceTransactionParser, fed email text instead of a speech transcript.
+    /// Parses a bank/card transaction-alert email into one or more
+    /// structured transactions using the on-device foundation model — same
+    /// pattern as VoiceTransactionParser, fed email text instead of a
+    /// speech transcript, except an email can legitimately contain several
+    /// distinct alerts (a daily digest), where a voice command or a single
+    /// receipt scan can't.
+    ///
+    /// isGenuineTransaction is applied per entry right here, same as
+    /// StatementReconciler.extractLineItems/DematHoldingExtractor.
+    /// extractHoldings filtering their own multi-item results before
+    /// returning — a bundled digest's one promotional line shouldn't sink
+    /// the other genuine entries in the same email, and shouldn't quietly
+    /// show up as a candidate either. An empty result means either no
+    /// transaction was found or every entry failed that gate; either way
+    /// the caller (EmailFetchCoordinator) treats it as "nothing to show,"
+    /// same as the single-transaction version's isGenuineTransaction==false
+    /// case always did.
     static func parse(emailBody: String,
                       subject: String,
                       categories: [Category],
-                      accounts: [Account]) async throws -> ParsedTransaction {
+                      accounts: [Account]) async throws -> [ParsedTransaction] {
         switch SystemLanguageModel.default.availability {
         case .available:
             break
@@ -37,35 +65,127 @@ enum EmailTransactionParser {
         let accountNames = accounts.map(\.name).joined(separator: ", ")
 
         let instructions = """
-            Parse a bank or card transaction alert email into a single \
-            financial transaction. Amounts are in Indian rupees. The \
+            Parse a bank or card transaction alert email into one or more \
+            financial transactions. Amounts are in Indian rupees. The \
             email's subject line is: "\(subject)".
 
-            For categoryName, choose the closest match from exactly these \
-            category names, or leave it nil if none fits: \(categoryNames).
+            This email may contain one or more separate transaction alerts \
+            (e.g. a daily digest from a card issuer listing several \
+            charges). Extract every distinct transaction as its own entry \
+            — do not merge them into one, do not summarize, do not pick \
+            only the first or largest. Most emails report exactly one \
+            transaction; extract exactly one entry in that case.
 
-            For accountName, choose the closest match from exactly these \
-            account names, or leave it nil if none fits: \(accountNames). \
-            Bank/card alert emails usually name the account (e.g. "HDFC Bank \
-            Card ending 1234") — match it to the closest account name above.
+            For each entry's categoryName, choose the closest match from \
+            exactly these category names, or leave it nil if none fits: \
+            \(categoryNames).
+
+            For each entry's accountName, choose the closest match from \
+            exactly these account names, or leave it nil if none fits: \
+            \(accountNames). Bank/card alert emails usually name the \
+            account (e.g. "HDFC Bank Card ending 1234") — match it to the \
+            closest account name above.
 
             Never invent a category or account name that is not in those \
             lists — return the chosen names exactly as written above.
 
-            If the email is a debit/spend/payment alert, type is "expense". \
-            If it's a credit/refund/salary alert, type is "income".
+            For each entry: if it reports a debit/spend/payment, type is \
+            "expense"; if it reports a credit/refund/salary, type is \
+            "income".
 
-            Set isGenuineTransaction to true only when the email reports \
-            one specific debit or credit that has already happened to a \
-            specific account. Set it to false for a promotional offer, a \
-            fee-structure/rate notice, a terms-and-conditions or policy \
-            update, a newsletter, or any other general notice — even one \
-            that mentions rupee amounts.
+            Set each entry's isGenuineTransaction to true only when it \
+            reports one specific debit or credit that has already happened \
+            to a specific account. Set it to false for a promotional \
+            offer, a fee-structure/rate notice, a terms-and-conditions or \
+            policy update, a newsletter, or any other general notice — \
+            even one that mentions rupee amounts — judged independently \
+            for each entry.
             """
 
-        let session = LanguageModelSession(instructions: instructions)
-        let response = try await session.respond(to: emailBody, generating: ParsedTransaction.self)
-        return response.content
+        // The overwhelming common case: a single alert email fits in one
+        // chunk (chunkedByLines returns just the one), so this runs the
+        // model directly and lets a real failure throw straight out to the
+        // caller — the exact single-shot behavior this function always
+        // had, and the reason parseWithRetry's error-swallowing (built for
+        // a multi-chunk statement/holdings document, where one bad section
+        // shouldn't sink the rest) is deliberately NOT used for this,
+        // typical, path: EmailFetchCoordinator surfaces a genuine failure
+        // as candidate.parseError, and silently swallowing it here would
+        // make that email's alert vanish instead.
+        let chunks = StatementReconciler.chunkedByLines(
+            emailBody, maxCharacters: StatementReconciler.maxChunkCharacters, overlapCharacters: StatementReconciler.chunkOverlapCharacters
+        )
+        guard chunks.count > 1 else {
+            let session = LanguageModelSession(instructions: instructions)
+            let response = try await session.respond(to: emailBody, generating: ParsedTransactionBatch.self)
+            return response.content.entries.filter(\.isGenuineTransaction)
+        }
+
+        // Only reached for an email long enough to actually risk
+        // GenerationError.exceededContextWindowSize — the same risk a
+        // multi-page statement runs, just far rarer for a single email
+        // (an unusually large digest). Reuses StatementReconciler's own
+        // chunking budget/helpers directly rather than duplicating them —
+        // DematHoldingExtractor already does the same for the identical
+        // reason (see StatementReconciler.maxChunkCharacters' doc comment).
+        var allEntries: [ParsedTransaction] = []
+        for chunk in chunks {
+            let chunkEntries = await parseWithRetry(chunk: chunk, instructions: instructions)
+            appendDeduping(chunkEntries.filter(\.isGenuineTransaction), to: &allEntries)
+        }
+        return allEntries
+    }
+
+    /// Runs one chunk through the model, halving and retrying on
+    /// GenerationError.exceededContextWindowSize — same shape as
+    /// StatementReconciler.extractLineItemsWithRetry/DematHoldingExtractor.
+    /// extractHoldingsWithRetry, kept as its own small copy rather than a
+    /// shared generic (each wraps a different @Generable response type)
+    /// exactly like those two already are relative to each other. Only
+    /// ever reached for the rare multi-chunk email — see parse(_:)'s
+    /// single-chunk fast path above for why swallowing an error here is
+    /// fine in this context but wouldn't be for the common case.
+    private static func parseWithRetry(chunk: String, instructions: String) async -> [ParsedTransaction] {
+        do {
+            let session = LanguageModelSession(instructions: instructions)
+            let response = try await session.respond(to: chunk, generating: ParsedTransactionBatch.self)
+            return response.content.entries
+        } catch LanguageModelSession.GenerationError.exceededContextWindowSize(_) {
+            guard chunk.count > StatementReconciler.minSplittableCharacters else { return [] }
+            var entries: [ParsedTransaction] = []
+            for half in StatementReconciler.splitInHalf(chunk) {
+                entries.append(contentsOf: await parseWithRetry(chunk: half, instructions: instructions))
+            }
+            return entries
+        } catch {
+            return []
+        }
+    }
+
+    /// How far back to look for an overlap-caused repeat when merging a
+    /// chunk's entries into the running list — mirrors StatementReconciler.
+    /// appendDeduping's dedupLookback, scaled down for how few entries a
+    /// multi-chunk *email* realistically produces versus a multi-page
+    /// statement.
+    private static let dedupLookback = 4
+
+    /// Same near-boundary-repeat collapsing as StatementReconciler.
+    /// appendDeduping, keyed on amount+date+merchant (ParsedTransaction has
+    /// no isLikelyDuplicate of its own — StatementLineItem/DematHolding
+    /// both declare theirs on the @Generable type itself since only their
+    /// own extractor ever needs it; ParsedTransaction is shared by Voice/
+    /// Receipt/Email/Statement parsing, so this stays local to the one
+    /// caller that actually chunks its input).
+    private static func appendDeduping(_ newEntries: [ParsedTransaction], to aggregate: inout [ParsedTransaction]) {
+        for entry in newEntries {
+            let recentTail = aggregate.suffix(dedupLookback)
+            let isDuplicate = recentTail.contains {
+                abs($0.amount - entry.amount) < 0.01
+                    && $0.resolvedDateString == entry.resolvedDateString
+                    && ($0.merchantName ?? "").caseInsensitiveCompare(entry.merchantName ?? "") == .orderedSame
+            }
+            if !isDuplicate { aggregate.append(entry) }
+        }
     }
 }
 
@@ -146,12 +266,18 @@ extension EmailTransactionParser {
 
     /// After the model parses a candidate as a credit ("income"), checks
     /// whether it's actually a refund for a specific earlier expense on
-    /// file — same/similar merchant, within refundWindowDays, amount no
+    /// file — same/similar merchant (or, failing that, the credit's own
+    /// wording explicitly reading as a reversal/refund — see
+    /// looksLikeReversalOrRefund), within refundWindowDays, amount no
     /// larger than the original debit, and not already claimed by another
     /// refund — and if one is found, reclassifies the candidate as
     /// .refund with that expense's category defaulted in (still editable
     /// before import, like any other field). Returns the unmatched
-    /// original `parsed` and `nil` if nothing qualifies.
+    /// original `parsed` and `nil` if nothing qualifies. Called for every
+    /// credit candidate regardless of source — a parsed credit alert email
+    /// and a credit ("Cr") line item StatementReconciler pulled off a PDF
+    /// statement both funnel through this same check (see
+    /// StatementReconciler.candidate(for:accounts:transactions:)).
     ///
     /// Deterministic Swift-side post-processing, not part of the model's
     /// own instructions: matching requires searching existing Transaction
@@ -174,7 +300,13 @@ extension EmailTransactionParser {
                 && !alreadyMatchedDebitIDs.contains(debit.persistentModelID)
                 && parsed.amount <= debit.amount + 0.01
                 && withinRefundWindow(debitDate: debit.date, creditDate: creditDate)
-                && merchantMatches(parsed.merchantName, debit)
+                // Ordinary merchant-name matching first; if that finds
+                // nothing at all, fall back to treating every amount/window-
+                // eligible debit as a candidate purely because the credit's
+                // own wording explicitly says it's a reversal/refund — see
+                // looksLikeReversalOrRefund's doc comment for why the name
+                // check alone isn't enough for every issuer's wording.
+                && (merchantMatches(parsed.merchantName, debit) || looksLikeReversalOrRefund(parsed.merchantName))
         }
 
         // Prefer the closest amount (a partial refund's fee gap should
@@ -219,6 +351,26 @@ extension EmailTransactionParser {
         }
         guard let debitNote = normalized(debit.note) else { return false }
         return namesAreSimilar(creditMerchant, debitNote)
+    }
+
+    /// Fallback signal for matchRefund's candidate filter, checked only
+    /// when the ordinary merchant-name check above found nothing: some
+    /// issuers' credit line-item wording drops the original merchant name
+    /// entirely in favor of generic reversal language — e.g. a statement
+    /// line reading "REVERSAL OF TXN DT 12/07" or "CHARGEBACK ADJ" instead
+    /// of repeating "AMAZON PAY INDIA" the way a "REFUND-AMAZON PAY INDIA"
+    /// line would (that case is already covered by merchantMatches' loose
+    /// substring check — the merchant name is still in there, just with a
+    /// prefix). When the merchant name is genuinely gone, the credit's own
+    /// explicit "this is a reversal/refund" wording is itself a strong
+    /// enough signal to widen the candidate pool to every amount/window-
+    /// eligible debit, rather than require a name match that can't
+    /// possibly succeed.
+    private static let reversalKeywords = ["reversal", "reversed", "refund", "chargeback", "charge back"]
+
+    private static func looksLikeReversalOrRefund(_ description: String?) -> Bool {
+        guard let description = normalized(description) else { return false }
+        return reversalKeywords.contains { description.contains($0) }
     }
 
     private static func normalized(_ name: String?) -> String? {

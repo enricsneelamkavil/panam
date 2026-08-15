@@ -168,36 +168,40 @@ final class EmailFetchCoordinator {
                     continue
                 }
                 do {
-                    let parsedRaw = try await EmailTransactionParser.parse(
+                    // Zero or more entries — EmailTransactionParser.parse
+                    // already applied its own isGenuineTransaction gate per
+                    // entry (see that function's doc comment), the same
+                    // "false negative silently dropped rather than shown"
+                    // intent the single-transaction version always had, now
+                    // independently per entry rather than for the whole
+                    // email. A bundled digest maps to as many candidates
+                    // here as it has genuine entries — each one reviewable/
+                    // editable/importable/deletable on its own (see
+                    // EmailTransactionCandidate's doc comment).
+                    let parsedEntries = try await EmailTransactionParser.parse(
                         emailBody: message.bodyText,
                         subject: message.subject,
                         categories: categories,
                         accounts: accounts
                     )
-                    // The model's own "is this actually a transaction" gate
-                    // — same intent as the pre-filter above, but able to
-                    // catch what the keyword screen alone can't (e.g. a
-                    // promo email that happens to cite one specific-looking
-                    // amount). A false negative here is silently dropped
-                    // rather than shown, so it never has to be manually
-                    // rejected in the review list.
-                    guard parsedRaw.isGenuineTransaction else {
-                        processedCount += 1
-                        continue
+                    for parsedRaw in parsedEntries {
+                        // Deterministic post-processing, not part of the
+                        // model's own output — see matchRefund's doc
+                        // comment. Run per entry: each bundled transaction
+                        // in a digest can independently turn out to be a
+                        // refund for its own separate earlier debit.
+                        let (parsed, matchedRefund) = EmailTransactionParser.matchRefund(
+                            for: parsedRaw, against: transactions
+                        )
+                        results.append(EmailTransactionCandidate(
+                            gmailMessageID: message.id,
+                            rawSubject: message.subject,
+                            rawSnippet: message.snippet,
+                            parsed: parsed,
+                            parseError: nil,
+                            matchedRefundTransaction: matchedRefund
+                        ))
                     }
-                    // Deterministic post-processing, not part of the
-                    // model's own output — see matchRefund's doc comment.
-                    let (parsed, matchedRefund) = EmailTransactionParser.matchRefund(
-                        for: parsedRaw, against: transactions
-                    )
-                    results.append(EmailTransactionCandidate(
-                        gmailMessageID: message.id,
-                        rawSubject: message.subject,
-                        rawSnippet: message.snippet,
-                        parsed: parsed,
-                        parseError: nil,
-                        matchedRefundTransaction: matchedRefund
-                    ))
                 } catch {
                     results.append(EmailTransactionCandidate(
                         gmailMessageID: message.id,
@@ -235,11 +239,29 @@ final class EmailFetchCoordinator {
         }
     }
 
-    /// Drops a candidate from the review list once it's been imported or
-    /// dismissed — TransactionMailsSheet calls this instead of mutating a
-    /// local array, since the array now lives here.
-    func removeTransactionCandidate(id: String) {
-        transactionCandidates.removeAll { $0.gmailMessageID == id }
+    /// The single import completion path — TransactionMailsSheet calls
+    /// this instead of separately calling GmailFetcher.markImported and
+    /// mutating the candidates array itself, since both now have to happen
+    /// together correctly: removes exactly this one candidate, never its
+    /// siblings bundled from the same digest email (see
+    /// EmailTransactionCandidate's doc comment), and only marks the source
+    /// Gmail message imported once every candidate that came from it is
+    /// gone from the review list.
+    ///
+    /// Marking the whole message imported the moment just one of its
+    /// bundled transactions is would make Gmail stop resurfacing it
+    /// entirely on a future fetch — and startTransactionFetch wipes
+    /// transactionCandidates on every new fetch, so any still-pending
+    /// sibling not yet imported would be lost for good, not just
+    /// re-shown. Waiting for every sibling to clear first (imported or
+    /// deleted) keeps the source email eligible for a future fetch for as
+    /// long as any of its bundled transactions are still un-reviewed.
+    func markCandidateImported(_ candidate: EmailTransactionCandidate) {
+        transactionCandidates.removeAll { $0.id == candidate.id }
+        let hasPendingSibling = transactionCandidates.contains { $0.gmailMessageID == candidate.gmailMessageID }
+        if !hasPendingSibling {
+            GmailFetcher.markImported(candidate.gmailMessageID)
+        }
     }
 
     func removeTransactionCandidates(at offsets: IndexSet) {
@@ -534,7 +556,6 @@ final class EmailFetchCoordinator {
             dematTotalHoldingsCount += holdings.count
 
             for holding in holdings {
-                let invested = DematHoldingExtractor.parseAmount(holding.investedAmountString)
                 let current = DematHoldingExtractor.parseAmount(holding.currentValueString)
 
                 if let remembered = investments.first(where: { $0.upstoxHoldingName == holding.instrumentName }) {
@@ -544,7 +565,7 @@ final class EmailFetchCoordinator {
                 } else {
                     let suggested = DematHoldingExtractor.matchInvestment(for: holding, in: investments)
                     dematReviewCandidates.append(DematHoldingReviewCandidate(
-                        holding: holding, investedAmount: invested, currentValue: current,
+                        holding: holding, currentValue: current,
                         suggestedInvestment: suggested
                     ))
                 }
@@ -567,6 +588,16 @@ final class EmailFetchCoordinator {
     func reassignDematCandidate(_ candidateID: UUID, to investment: Investment?) {
         guard let index = dematReviewCandidates.firstIndex(where: { $0.id == candidateID }) else { return }
         dematReviewCandidates[index].suggestedInvestment = investment
+    }
+
+    /// The review row's editable current-value field calls this on every
+    /// keystroke — same index-based-mutation approach as
+    /// reassignDematCandidate, so the live returns-percent recalculation
+    /// (DematHoldingRow) always reflects what's about to be confirmed, not
+    /// what the statement originally said.
+    func updateDematCandidateCurrentValue(_ candidateID: UUID, to newValue: Double?) {
+        guard let index = dematReviewCandidates.firstIndex(where: { $0.id == candidateID }) else { return }
+        dematReviewCandidates[index].currentValue = newValue
     }
 
     /// The confirmed-match action: writes currentValue/lastValuationDate and

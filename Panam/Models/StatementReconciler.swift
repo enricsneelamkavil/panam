@@ -16,6 +16,9 @@ struct StatementLineItem {
     @Guide(description: "The transaction amount as a positive number, regardless of how debit/credit is denoted on the statement")
     var amount: Double
 
+    @Guide(description: "True if this specific line is a credit — money added to the account, often marked \"Cr\", printed in a separate Credit column, or described as a refund/reversal/cashback. False if it's a debit — money spent, often marked \"Dr\" or printed in a separate Debit column. Most statement lines are debits; only set true when the statement clearly shows this particular line as a credit.")
+    var isCredit: Bool
+
     @Guide(description: "The line's description/narration/merchant text exactly as printed")
     var description: String
 
@@ -25,13 +28,16 @@ struct StatementLineItem {
     @Guide(description: "Only true if this is a real row from the statement's actual transaction table — a specific date, a specific single amount, and a description for one transaction that happened on that date. False for a fee schedule row, an interest rate/calculation row, a reward points summary row, terms and conditions text, or a promotional insert, even if it mentions rupee amounts.")
     var isGenuineTransaction: Bool
 
-    /// Same date + amount + description (trimmed, case-insensitive) — used
-    /// only to collapse the near-boundary repeats two overlapping chunks
-    /// can produce for the same physical row, never as a general-purpose
-    /// equality check.
+    /// Same date + amount + direction + description (trimmed,
+    /// case-insensitive) — used only to collapse the near-boundary repeats
+    /// two overlapping chunks can produce for the same physical row, never
+    /// as a general-purpose equality check. isCredit is part of the
+    /// comparison so a same-day, same-amount debit and its own credit
+    /// reversal are never mistaken for one duplicated row.
     func isLikelyDuplicate(of other: StatementLineItem) -> Bool {
         dateString == other.dateString
             && abs(amount - other.amount) < 0.01
+            && isCredit == other.isCredit
             && description.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(
                 other.description.trimmingCharacters(in: .whitespacesAndNewlines)
             ) == .orderedSame
@@ -77,6 +83,14 @@ struct StatementReconciliationCandidate: Identifiable {
     let id = UUID()
     let rawDescription: String
     let parsed: ParsedTransaction
+    /// Set when EmailTransactionParser.matchRefund found an existing debit
+    /// this credit line looks like a refund for — `parsed` has already been
+    /// reclassified to .refund by that point (see
+    /// StatementReconciler.candidate(for:accounts:transactions:)). Carried
+    /// along purely for display (the "Matched refund for…" review label,
+    /// same as EmailTransactionCandidate's identically-named field) and so
+    /// the eventual Transaction can link back to it via `refundedTransaction`.
+    var matchedRefundTransaction: Transaction? = nil
 }
 
 enum StatementReconciler {
@@ -213,21 +227,34 @@ enum StatementReconciler {
             Find every individual transaction line in this section — this \
             is usually a table with a date, a description/narration, and an \
             amount (sometimes split into separate debit/credit columns, or \
-            marked with "Dr"/"Cr"). Extract EVERY line in THIS section as \
-            its own entry. Do not summarize, do not report only a few \
-            examples, and do not merge multiple lines into one — if this \
-            section contains 20 transaction lines, produce 20 entries.
+            marked with "Dr"/"Cr"). For each line, also decide whether it's \
+            a debit or a credit — look for a "Dr"/"Cr" suffix, which of two \
+            separate Debit/Credit columns the amount sits in, or wording \
+            like "refund"/"reversal"/"cashback credited" — and set isCredit \
+            accordingly; most lines on a card statement are debits. Extract \
+            EVERY line in THIS section as its own entry. Do not summarize, \
+            do not report only a few examples, and do not merge multiple \
+            lines into one — if this section contains 20 transaction \
+            lines, produce 20 entries.
 
             Ignore lines that aren't individual transactions: statement \
-            headers, running/opening/closing balance lines, page \
-            footers, and marketing text.
+            headers, running/opening/closing balance lines, page footers, \
+            and marketing text. This includes a statement's own closing/ \
+            disclaimer block — "this is a computer generated statement," \
+            "this statement does not require a signature," customer-care \
+            contact details, a registered/corporate office address, a \
+            grievance-redressal officer's name, or a generic sign-off like \
+            "Regards" / "Thank you for banking with us." None of that is a \
+            transaction, even when it sits right next to the transaction \
+            table or repeats at the bottom of every page.
 
             Only extract rows from the actual transaction/statement table \
             — each with a specific date, a specific single amount, and a \
             transaction description naming a real merchant/payee. Do NOT \
             extract: fee schedule tables, interest rate tables, reward \
-            points summaries, terms and conditions text, or promotional \
-            inserts, even if they contain rupee amounts.
+            points summaries, terms and conditions text, promotional \
+            inserts, or the closing disclaimer/contact-info block described \
+            above, even if they contain rupee amounts.
 
             Bank statements commonly include a worked EXAMPLE explaining \
             how Interest or the Minimum Amount Due is calculated — look \
@@ -268,6 +295,13 @@ enum StatementReconciler {
             recover each line's real date, amount, and description.
             """
 
+        // Cuts the statement's own closing/disclaimer block off the *whole*
+        // document before it's ever split into chunks — see
+        // truncateAtFooter's doc comment for why this runs once here
+        // instead of as another per-chunk skip like
+        // looksLikeNonTransactionSection below.
+        let statementText = truncateAtFooter(statementText)
+
         var allEntries: [StatementLineItem] = []
         for chunk in chunkedByLines(statementText, maxCharacters: maxChunkCharacters, overlapCharacters: chunkOverlapCharacters) {
             // Skip the model call entirely for a chunk that's recognizably
@@ -301,6 +335,50 @@ enum StatementReconciler {
         return allEntries
     }
 
+    /// Deterministic cut point for a statement's own closing block — "this
+    /// is a computer/system generated statement," "does not require a
+    /// signature," a customer-care/registered-office/grievance-officer
+    /// block, and similar sign-off text that closes out virtually every
+    /// bank/card statement. Real-world testing against an Axis Bank credit
+    /// card statement showed exactly this kind of boilerplate leaking
+    /// through as if it were transaction rows — the closing block sits in
+    /// the *same* chunk as the tail end of the real transaction table
+    /// rather than a chunk of its own, so looksLikeNonTransactionSection's
+    /// whole-chunk skip below can't remove it without also losing the
+    /// genuine rows sharing that chunk. Cutting the raw text here instead,
+    /// once, before it's ever split into chunks, keeps everything before
+    /// the marker and drops only what comes after.
+    ///
+    /// Cuts at the LAST matching line, not the first: the same closing
+    /// phrase often repeats as a per-page footer on a multi-page statement,
+    /// and cutting at the first occurrence would silently discard every
+    /// later page's real transactions. Cutting at the last occurrence only
+    /// ever removes the document's true trailing close, never anything
+    /// before it — an earlier per-page repeat of the same phrase is left in
+    /// place for looksLikeNonTransactionSection/isGenuineTransaction to
+    /// handle downstream, same as before this existed.
+    ///
+    /// None of these markers are Axis-specific — the same closing-block
+    /// shape is generic to virtually any issuer's statement, so this isn't
+    /// scoped to Axis at all.
+    private static let footerMarkers = [
+        "this is a computer generated statement", "this is a system generated statement",
+        "this is a computer-generated statement", "this is a system-generated statement",
+        "does not require a signature",
+        "please do not reply to this e-mail", "please do not reply to this email",
+        "registered office", "regd. office", "regd office", "corporate office",
+        "grievance redressal officer", "nodal officer",
+    ]
+
+    static func truncateAtFooter(_ statementText: String) -> String {
+        let lines = statementText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard let cutoff = lines.lastIndex(where: { line in
+            let lowercased = line.lowercased()
+            return footerMarkers.contains { lowercased.contains($0) }
+        }) else { return statementText }
+        return lines[..<cutoff].joined(separator: "\n")
+    }
+
     /// Cheap, keyword-based screen applied *before* a chunk ever reaches
     /// the model — mirrors EmailTransactionParser.looksLikeTransactionAlert's
     /// role for email. Calibrated against a real ICICI/Amazon Pay statement
@@ -331,6 +409,19 @@ enum StatementReconciler {
             "mad calculation", "interest calculation",
             "grievances redressal", "important information on your credit card",
             "terms and condition", "terms & condition", "great offers on your card",
+            // Generic statement closing/disclaimer boilerplate — same
+            // phrases truncateAtFooter looks for, kept here too as a
+            // second, per-chunk line of defense for a closing block small
+            // enough to land in its own chunk (truncateAtFooter only
+            // catches the document's trailing close, not a shorter
+            // disclaimer chunk sandwiched earlier). Deliberately doesn't
+            // include a customer-care phone number line — that routinely
+            // repeats in every page's header, transaction pages included,
+            // so treating it as a whole-chunk skip signal risks losing
+            // real rows rather than just the one boilerplate line.
+            "computer generated statement", "system generated statement",
+            "does not require a signature", "please do not reply to this",
+            "registered office", "corporate office",
         ]
         return markers.contains { lowercased.contains($0) }
     }
@@ -461,10 +552,18 @@ enum StatementReconciler {
     private static let dateToleranceDays = 1
 
     /// Compares each extracted line against `transactions`: same date
-    /// (±1 day), same amount, and — only when the line names a card/account
-    /// via last-4 — the same resolved account. A line with no last-4 is
-    /// matched on date+amount alone, same as the other two conditions
-    /// being sufficient when there's nothing more specific to check.
+    /// (±1 day), same amount, the same debit/credit direction, and — only
+    /// when the line names a card/account via last-4 — the same resolved
+    /// account. A line with no last-4 is matched on date+amount+direction
+    /// alone, same as the other conditions being sufficient when there's
+    /// nothing more specific to check.
+    ///
+    /// A credit line that isn't already matched here doesn't automatically
+    /// become plain "possibly missing income" — see candidate(for:
+    /// accounts:transactions:), which runs it through
+    /// EmailTransactionParser.matchRefund first, exactly like a credit
+    /// alert email does, so a CR that's actually a refund for an existing
+    /// debit gets reclassified before it's ever shown for review.
     static func reconcile(
         entries: [StatementLineItem],
         against transactions: [Transaction],
@@ -477,7 +576,7 @@ enum StatementReconciler {
             if isMatched(entry, in: transactions, accounts: accounts) {
                 matchedCount += 1
             } else {
-                unmatched.append(candidate(for: entry, accounts: accounts))
+                unmatched.append(candidate(for: entry, accounts: accounts, transactions: transactions))
             }
         }
         return (matchedCount, unmatched)
@@ -495,11 +594,24 @@ enum StatementReconciler {
         return transactions.contains { transaction in
             guard withinTolerance(transaction.date, entryDate) else { return false }
             guard amountsMatch(transaction.amount, entry.amount) else { return false }
+            guard directionMatches(entry, transaction) else { return false }
             if let resolvedAccount {
                 return transaction.account == resolvedAccount
             }
             return true
         }
+    }
+
+    /// A statement credit line should only count as already-matched
+    /// against an income-like Transaction (income/interest/dividend/
+    /// refund), and a debit line only against a non-income-like one —
+    /// without this, a CR entry could spuriously "match" an unrelated
+    /// expense Transaction that merely happens to share the same date,
+    /// amount, and account, silently absorbing it into matchedCount and
+    /// keeping it from ever reaching candidate(for:accounts:transactions:)'s
+    /// refund-matching step below.
+    private static func directionMatches(_ entry: StatementLineItem, _ transaction: Transaction) -> Bool {
+        entry.isCredit == transaction.type.isIncomeLike
     }
 
     private static func withinTolerance(_ a: Date, _ b: Date) -> Bool {
@@ -521,12 +633,23 @@ enum StatementReconciler {
     /// Builds the review candidate — a ParsedTransaction with no
     /// categoryName/accountName guess (the statement schema never asked
     /// the model for either), just the date/amount/description/last-4 the
-    /// line actually carries. Feeds straight into the same
+    /// line actually carries, and type set from entry.isCredit rather than
+    /// always "expense". Feeds straight into the same
     /// AddEditTransactionView(prefill:) sheet every other entry point uses.
-    private static func candidate(for entry: StatementLineItem, accounts: [Account]) -> StatementReconciliationCandidate {
-        let parsed = ParsedTransaction(
+    ///
+    /// A credit line is run through EmailTransactionParser.matchRefund
+    /// against `transactions` before this returns — the exact same
+    /// deterministic post-processing step a credit alert email goes
+    /// through (see EmailFetchCoordinator's transaction-mail fetch) — so a
+    /// CR that's really a refund for an existing debit is reclassified to
+    /// .refund, with matchedRefundTransaction carried along, instead of
+    /// surfacing as plain unmatched income.
+    private static func candidate(
+        for entry: StatementLineItem, accounts: [Account], transactions: [Transaction]
+    ) -> StatementReconciliationCandidate {
+        var parsed = ParsedTransaction(
             amount: entry.amount,
-            type: "expense",
+            type: entry.isCredit ? "income" : "expense",
             categoryName: nil,
             accountName: nil,
             note: entry.description,
@@ -536,6 +659,16 @@ enum StatementReconciler {
             paymentMethodName: nil,
             isGenuineTransaction: true
         )
-        return StatementReconciliationCandidate(rawDescription: entry.description, parsed: parsed)
+
+        var matchedRefundTransaction: Transaction?
+        if entry.isCredit {
+            let (reclassified, matched) = EmailTransactionParser.matchRefund(for: parsed, against: transactions)
+            parsed = reclassified
+            matchedRefundTransaction = matched
+        }
+
+        return StatementReconciliationCandidate(
+            rawDescription: entry.description, parsed: parsed, matchedRefundTransaction: matchedRefundTransaction
+        )
     }
 }
