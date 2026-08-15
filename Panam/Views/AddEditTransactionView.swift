@@ -48,6 +48,16 @@ struct AddEditTransactionView: View {
     @Query(sort: \Category.name) private var categories: [Category]
     @Query(sort: \Person.name) private var people: [Person]
 
+    @AppStorage(AppSettings.knownUPIAppsKey)
+    private var knownUPIAppsRaw = AppSettings.knownUPIAppsDefault
+
+    private var knownUPIApps: [String] {
+        knownUPIAppsRaw
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
     @State private var type: TransactionType = .expense
     @State private var amount: Double?
     @State private var adjustmentIsPositive = true
@@ -59,6 +69,13 @@ struct AddEditTransactionView: View {
     @State private var merchantName = ""
     @State private var paymentMethod: PaymentMethod?
     @State private var upiApp = ""
+    /// UI-only — which of knownUPIApps is picked, or nil for "Add New."
+    /// upiApp itself (the actual value that gets saved) stays the single
+    /// source of truth exactly as before; this just drives which Picker row
+    /// is checked and whether the "new name" TextField shows, mirroring
+    /// AddLendingEntryView's selectedPerson/newPersonName split for the
+    /// same "pick existing, or add inline" shape.
+    @State private var upiAppSelection: String?
     @State private var showingVoiceEntry = false
     @State private var showingReceiptScan = false
     @State private var isSplit = false
@@ -314,6 +331,25 @@ struct AddEditTransactionView: View {
                     }
                 }
 
+                // Category (+ Merchant) doesn't depend on Payment Method, so
+                // it's asked up front — Payment Method comes next, and
+                // Account (below) waits until that's chosen.
+                if !type.isTransferLike && type != .adjustment {
+                    Section {
+                        Picker("Category", selection: $selectedCategory) {
+                            Text("Select Category").tag(nil as Category?)
+                            ForEach(categories) { category in
+                                Label(category.name, systemImage: category.icon)
+                                    .tag(category as Category?)
+                            }
+                        }
+
+                        if Self.merchantEligibleTypes.contains(type) {
+                            TextField("Merchant", text: $merchantName)
+                        }
+                    }
+                }
+
                 if !type.isTransferLike && type != .adjustment {
                     Section {
                         Picker("Payment Method", selection: $paymentMethod) {
@@ -324,7 +360,24 @@ struct AddEditTransactionView: View {
                         }
 
                         if paymentMethod == .upi {
-                            TextField("UPI App", text: $upiApp)
+                            // Same "pick existing, or add inline" shape as
+                            // AddLendingEntryView's Person picker — nil
+                            // selection means "Add New," which reveals the
+                            // plain-text field below for a name that isn't
+                            // in the known list yet (see UPIAppsView).
+                            Picker("UPI App", selection: $upiAppSelection) {
+                                Text("Add New").tag(nil as String?)
+                                ForEach(knownUPIApps, id: \.self) { app in
+                                    Text(app).tag(app as String?)
+                                }
+                            }
+                            .onChange(of: upiAppSelection) { _, newValue in
+                                upiApp = newValue ?? ""
+                            }
+
+                            if upiAppSelection == nil {
+                                TextField("App Name", text: $upiApp)
+                            }
                         }
                     }
                 }
@@ -336,8 +389,8 @@ struct AddEditTransactionView: View {
                     }
                 }
 
-                Section {
-                    if type.isTransferLike {
+                if type.isTransferLike {
+                    Section {
                         Picker("From", selection: $selectedAccount) {
                             Text("Select Account").tag(nil as Account?)
                             ForEach(accounts) { account in
@@ -356,20 +409,27 @@ struct AddEditTransactionView: View {
                                 .font(.caption)
                                 .foregroundStyle(.red)
                         }
-                    } else {
-                        if isPaidBySomeoneElse {
-                            // No account is involved — someone else's money paid for this.
-                            Picker("Paid By", selection: $paidByPersonSelected) {
-                                Text("New Person").tag(nil as Person?)
-                                ForEach(people) { person in
-                                    Text(person.name).tag(person as Person?)
-                                }
+                    }
+                } else if isPaidBySomeoneElse {
+                    // No account is involved — someone else's money paid for this.
+                    Section {
+                        Picker("Paid By", selection: $paidByPersonSelected) {
+                            Text("New Person").tag(nil as Person?)
+                            ForEach(people) { person in
+                                Text(person.name).tag(person as Person?)
                             }
-                            if paidByPersonSelected == nil {
-                                TextField("Name", text: $paidByNewPersonName)
-                            }
-                        } else if paymentMethod == .cash {
-                            // Cash auto-assigns to the single cash account — no picker shown.
+                        }
+                        if paidByPersonSelected == nil {
+                            TextField("Name", text: $paidByNewPersonName)
+                        }
+                    }
+                } else if type == .adjustment || paymentMethod != nil {
+                    // Adjustment has no Payment Method step, so its Account
+                    // picker is always available. Everything else waits for
+                    // Payment Method to be chosen — Cash auto-assigns rather
+                    // than showing a picker at all.
+                    Section {
+                        if paymentMethod == .cash {
                             if cashAccount == nil {
                                 Text("No cash account found — add one in Accounts first")
                                     .font(.caption)
@@ -382,20 +442,6 @@ struct AddEditTransactionView: View {
                                     Text(account.name).tag(account as Account?)
                                 }
                             }
-                        }
-
-                        if type != .adjustment {
-                            Picker("Category", selection: $selectedCategory) {
-                                Text("Select Category").tag(nil as Category?)
-                                ForEach(categories) { category in
-                                    Label(category.name, systemImage: category.icon)
-                                        .tag(category as Category?)
-                                }
-                            }
-                        }
-
-                        if Self.merchantEligibleTypes.contains(type) {
-                            TextField("Merchant", text: $merchantName)
                         }
                     }
                 }
@@ -492,6 +538,7 @@ struct AddEditTransactionView: View {
                 if newType.isTransferLike {
                     paymentMethod = nil
                     upiApp = ""
+                    upiAppSelection = nil
                     selectedCategory = nil
                 } else {
                     toAccount = nil
@@ -499,6 +546,7 @@ struct AddEditTransactionView: View {
                 if newType == .adjustment {
                     paymentMethod = nil
                     upiApp = ""
+                    upiAppSelection = nil
                     selectedCategory = nil
                     merchantName = ""
                 }
@@ -565,6 +613,7 @@ struct AddEditTransactionView: View {
                 guard !type.isTransferLike else { return }
                 if paymentMethod != .upi {
                     upiApp = ""
+                    upiAppSelection = nil
                 }
                 if paymentMethod == .cash {
                     selectedAccount = cashAccount
@@ -665,6 +714,10 @@ struct AddEditTransactionView: View {
         merchantName = transaction.merchantName ?? ""
         paymentMethod = transaction.paymentMethod
         upiApp = transaction.upiApp ?? ""
+        // Only pre-select the Picker row if it's a name we actually know —
+        // an app logged before this list existed (or since removed from it)
+        // still shows correctly via the "Add New" TextField instead.
+        upiAppSelection = knownUPIApps.contains(upiApp) ? upiApp : nil
         if transaction.type.isTransferLike {
             toAccount = transaction.toAccount
         }
@@ -683,9 +736,22 @@ struct AddEditTransactionView: View {
         return newPerson
     }
 
+    /// Mirrors resolvePaidByPerson's "typed something new → remember it"
+    /// shape, but for the known-apps @AppStorage list (UPIAppsView) rather
+    /// than a SwiftData model — a name typed into the "Add New" field is
+    /// available as a Picker option on the next transaction without a
+    /// separate trip to UPI Apps to add it there first.
+    private func rememberUPIAppIfNeeded() {
+        guard paymentMethod == .upi else { return }
+        let trimmed = upiApp.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !knownUPIApps.contains(trimmed) else { return }
+        knownUPIAppsRaw += (knownUPIAppsRaw.isEmpty ? "" : "\n") + trimmed
+    }
+
     private func save() {
         guard let amount, amount > 0, let signedAmount else { return }
         guard isPaidBySomeoneElse || selectedAccount != nil else { return }
+        rememberUPIAppIfNeeded()
         let normalizedDate = Calendar.current.startOfDay(for: date)
 
         if let transaction {

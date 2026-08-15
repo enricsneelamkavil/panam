@@ -152,17 +152,21 @@ enum StatementReconciler {
     /// headroom for the instructions text, the injected @Generable schema,
     /// and a chunk with many transaction lines producing a correspondingly
     /// large generated response.
-    private static let maxChunkCharacters = 2500
+    /// Not private: DematHoldingExtractor reuses this same chunking budget
+    /// (and chunkedByLines/minSplittableCharacters/splitInHalf below) for
+    /// the identical reason — a holdings statement can run just as long as
+    /// a transaction one before it ever reaches the model.
+    static let maxChunkCharacters = 2500
     /// Repeated at the head of the next chunk so a transaction row that
     /// falls right at a boundary reads complete (not truncated) in at
     /// least one chunk — extractLineItems then drops the resulting
     /// near-boundary repeats, see appendDeduping(_:to:).
-    private static let chunkOverlapCharacters = 250
+    static let chunkOverlapCharacters = 250
     /// Below this, a chunk that still overflows the context window is
     /// dropped rather than halved and retried again — something that small
     /// overflowing means a pathologically dense/unbroken section, not
     /// something another split would fix.
-    private static let minSplittableCharacters = 300
+    static let minSplittableCharacters = 300
     /// How far back to look for an overlap-caused repeat when merging a
     /// chunk's entries into the running list — generous relative to how
     /// many rows chunkOverlapCharacters actually spans, and deliberately
@@ -362,7 +366,7 @@ enum StatementReconciler {
     /// each (after the first) opening with the previous chunk's trailing
     /// `overlapCharacters` worth of lines repeated verbatim — chosen over a
     /// raw character split so a chunk boundary never lands mid-row.
-    private static func chunkedByLines(_ text: String, maxCharacters: Int, overlapCharacters: Int) -> [String] {
+    static func chunkedByLines(_ text: String, maxCharacters: Int, overlapCharacters: Int) -> [String] {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         guard !lines.isEmpty else { return [] }
 
@@ -426,7 +430,7 @@ enum StatementReconciler {
     /// Splits on the middle line where possible (keeps rows intact); falls
     /// back to a raw character midpoint only for a chunk with no newline to
     /// split on at all.
-    private static func splitInHalf(_ text: String) -> [String] {
+    static func splitInHalf(_ text: String) -> [String] {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         guard lines.count > 1 else {
             let midIndex = text.index(text.startIndex, offsetBy: text.count / 2)

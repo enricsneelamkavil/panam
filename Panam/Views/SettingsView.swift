@@ -26,6 +26,17 @@ struct SettingsView: View {
     @AppStorage(AppSettings.dailyReminderMinuteKey)
     private var dailyReminderMinute = AppSettings.dailyReminderMinuteDefault
 
+    @AppStorage(AppSettings.autopayHourKey)
+    private var autopayHour = AppSettings.autopayHourDefault
+
+    /// "3:00 AM" style label for a 24-hour value, for the autopay time
+    /// picker below — same formatting ProfileView's backup-time picker uses.
+    private static func hourLabel(_ hour: Int) -> String {
+        let components = DateComponents(hour: hour, minute: 0)
+        let date = Calendar.current.date(from: components) ?? .now
+        return date.formatted(.dateTime.hour().minute())
+    }
+
     /// DatePicker needs a Date binding, but the setting itself is stored as
     /// a plain hour/minute pair (no meaningful "day" — it's a daily
     /// recurring time, not a one-off moment) — this bridges the two
@@ -116,6 +127,16 @@ struct SettingsView: View {
                     }
                 } footer: {
                     Text("A daily notification reminding you to log today's transactions. Off by default — not everyone wants a nudge.")
+                }
+
+                Section {
+                    Picker("Autopay Time", selection: $autopayHour) {
+                        ForEach(0..<24, id: \.self) { hour in
+                            Text(Self.hourLabel(hour)).tag(hour)
+                        }
+                    }
+                } footer: {
+                    Text("Due-or-overdue occurrences with autopay on are settled automatically once a day, the first time you open the app on or after this time — won't run again until tomorrow, even if you background and reopen the app several times.")
                 }
 
             }

@@ -17,6 +17,7 @@ struct EmailManagementView: View {
 
     @State private var showingTransactionMailsSheet = false
     @State private var showingStatementMailsSheet = false
+    @State private var showingDematStatementsSheet = false
     /// Captured once on appear (and the store cleared right after) so these
     /// show exactly once — ProfileView's badge count is what tells you
     /// there's something new here in the first place.
@@ -60,6 +61,18 @@ struct EmailManagementView: View {
                 }
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
+
+                Section {
+                    Button {
+                        showingDematStatementsSheet = true
+                    } label: {
+                        cardLabel(title: "Demat Statements")
+                    }
+                    .buttonStyle(.plain)
+                    .dashboardCard()
+                }
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
             }
             .navigationTitle("Email Management")
             .navigationBarTitleDisplayMode(.inline)
@@ -73,6 +86,9 @@ struct EmailManagementView: View {
             }
             .sheet(isPresented: $showingStatementMailsSheet) {
                 StatementMailsSheet()
+            }
+            .sheet(isPresented: $showingDematStatementsSheet) {
+                DematStatementsSheet()
             }
             .onAppear {
                 autoFetchNotices = StatementAutoFetchStore.notices
@@ -1122,8 +1138,13 @@ private struct PDFPasswordPromptSheet: View {
                         }
                     }
                 } footer: {
+                    // Generic wording ("this statement," not "this card") so
+                    // the same sheet reads correctly whether accounts is a
+                    // real card list (Statement Mails) or empty (Demat
+                    // Statements, which has no Account concept — see
+                    // DematStatementsSheet.attemptUnlock).
                     if savePassword {
-                        Text("Panam will try this password automatically the next time it needs to unlock a statement for this card.")
+                        Text("Panam will try this password automatically the next time it needs to unlock this statement.")
                     }
                 }
             }
@@ -1145,8 +1166,377 @@ private struct PDFPasswordPromptSheet: View {
     }
 }
 
+// MARK: - Demat Statements (configure → fetch → review, one sheet)
+
+/// Same overall shape as StatementMailsSheet — sender-list configuration,
+/// Fetch Emails, a Fetched Emails list with per-row lock status, the same
+/// PDFPasswordPromptSheet/Keychain save-password flow — but no manual PDF
+/// picker (out of scope for the first pass) and a different results shape:
+/// instead of matched/unmatched transactions, this shows however many
+/// holdings updated silently (an exact remembered-name match — see
+/// Investment.upstoxHoldingName) plus a review list for everything that
+/// didn't, where confirming or re-picking an Investment is what actually
+/// writes currentValue/lastValuationDate.
+private struct DematStatementsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(EmailFetchCoordinator.self) private var coordinator
+
+    @Query(sort: \Investment.name) private var investments: [Investment]
+
+    @AppStorage(AppSettings.dematSenderTermsKey)
+    private var dematSenderTermsRaw = AppSettings.dematSenderTermsDefault
+
+    @State private var newDematSenderTerm = ""
+    @State private var reassigningCandidate: DematHoldingReviewCandidate?
+
+    // Password-protected PDFs — same shape as StatementMailsSheet's, minus
+    // the manual-pick branch (pendingLockedEmailContext is always set here;
+    // every locked Demat PDF comes from a fetched Gmail row).
+    @State private var pendingLockedDocument: PDFDocument?
+    @State private var pendingLockedEmailContext: GmailMessageSummary?
+    @State private var showingPasswordPrompt = false
+    @State private var passwordErrorMessage: String?
+    @State private var passwordContinuation: CheckedContinuation<Bool, Never>?
+
+    private var isFetchingThis: Bool {
+        coordinator.isFetching && coordinator.fetchType == .dematStatements
+    }
+
+    private var dematSenderTerms: [String] {
+        dematSenderTermsRaw
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    private var hasFetched: Bool {
+        coordinator.dematTotalHoldingsCount > 0 || !coordinator.dematReviewCandidates.isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    ForEach(dematSenderTerms, id: \.self) { term in
+                        Text(term)
+                    }
+                    .onDelete(perform: removeDematSenderTerms)
+
+                    HStack {
+                        TextField("", text: $newDematSenderTerm, prompt: Text("e.g. noreply-at-upstox-dot-com").foregroundStyle(.secondary))
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        Button("Add", action: addDematSenderTerm)
+                            .disabled(newDematSenderTerm.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                } header: {
+                    Text("Search These Senders")
+                } footer: {
+                    Text("Panam searches Gmail for demat/broker holdings statement emails from any of these addresses/domains in the last 6 months.")
+                }
+
+                Section {
+                    Button {
+                        performFetch()
+                    } label: {
+                        if isFetchingThis {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Text("Fetch Emails")
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.appPrimary)
+                    .disabled(coordinator.isFetching || dematSenderTerms.isEmpty)
+
+                    if isFetchingThis && coordinator.totalCount > 0 {
+                        FetchProgressView(current: coordinator.processedCount, total: coordinator.totalCount, startedAt: coordinator.fetchStartedAt)
+                    }
+
+                    if let fetchErrorMessage = coordinator.fetchErrorMessage {
+                        Text(fetchErrorMessage)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                if !coordinator.fetchedDematEmails.isEmpty {
+                    Section {
+                        ForEach(coordinator.fetchedDematEmails) { email in
+                            Button {
+                                rowTapped(email.id)
+                            } label: {
+                                FetchedEmailRow(summary: email.summary, status: email.status)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(email.status != .locked)
+                        }
+                    } header: {
+                        Text("Fetched Emails")
+                    } footer: {
+                        Text("Locked statements wait here until you tap them to enter a password — everything else processes on its own.")
+                    }
+                }
+
+                if hasFetched {
+                    Section {
+                        LabeledContent("Holdings Found") {
+                            Text("\(coordinator.dematTotalHoldingsCount)")
+                        }
+                        if coordinator.dematAutoUpdatedCount > 0 {
+                            LabeledContent("Auto-Updated") {
+                                Text("\(coordinator.dematAutoUpdatedCount)")
+                            }
+                        }
+                        if !coordinator.dematReviewCandidates.isEmpty {
+                            LabeledContent("Needs Review") {
+                                Text("\(coordinator.dematReviewCandidates.count)")
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                    }
+
+                    if !coordinator.dematReviewCandidates.isEmpty {
+                        Section {
+                            ForEach(coordinator.dematReviewCandidates) { candidate in
+                                DematHoldingRow(
+                                    candidate: candidate,
+                                    onChangeMatch: { reassigningCandidate = candidate },
+                                    onConfirm: { confirm(candidate) },
+                                    onSkip: { coordinator.skipDematCandidate(candidate) }
+                                )
+                            }
+                            .onDelete(perform: coordinator.removeDematCandidates)
+                        } header: {
+                            Text("Review")
+                        } footer: {
+                            Text("First-time matches aren't always right — confirm or re-pick which investment each holding belongs to. Once confirmed, that exact holding auto-updates from future statements without asking again.")
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Demat Statements")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .sheet(item: $reassigningCandidate) { candidate in
+                DematInvestmentPickerSheet(candidate: candidate, investments: investments)
+            }
+            .sheet(isPresented: $showingPasswordPrompt, onDismiss: {
+                pendingLockedDocument = nil
+                pendingLockedEmailContext = nil
+                if let passwordContinuation {
+                    self.passwordContinuation = nil
+                    passwordContinuation.resume(returning: false)
+                }
+            }) {
+                // accounts: [] — Demat statements have no Account concept
+                // (see KeychainStore's Demat statement PDF passwords
+                // section), so the "Card" picker inside simply doesn't
+                // render (eligibleAccounts is empty) and manualAccount is
+                // always nil in onUnlock below.
+                PDFPasswordPromptSheet(
+                    accounts: [],
+                    emailContext: pendingLockedEmailContext,
+                    errorMessage: passwordErrorMessage
+                ) { password, savePassword, _ in
+                    attemptUnlock(password: password, savePassword: savePassword)
+                }
+            }
+        }
+    }
+
+    // MARK: - Sender configuration
+
+    private func addDematSenderTerm() {
+        let trimmed = newDematSenderTerm.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !dematSenderTerms.contains(trimmed) else { return }
+        dematSenderTermsRaw += (dematSenderTermsRaw.isEmpty ? "" : "\n") + trimmed
+        newDematSenderTerm = ""
+    }
+
+    private func removeDematSenderTerms(at offsets: IndexSet) {
+        var terms = dematSenderTerms
+        terms.remove(atOffsets: offsets)
+        dematSenderTermsRaw = terms.joined(separator: "\n")
+    }
+
+    private func performFetch() {
+        coordinator.startDematFetch(senderTerms: dematSenderTerms, investments: investments)
+    }
+
+    // MARK: - Password prompt
+
+    private func rowTapped(_ id: String) {
+        guard let index = coordinator.fetchedDematEmails.firstIndex(where: { $0.id == id }),
+              coordinator.fetchedDematEmails[index].status == .locked,
+              let document = coordinator.fetchedDematEmails[index].document
+        else { return }
+
+        Task {
+            let unlocked = await promptForPassword(document: document, emailContext: coordinator.fetchedDematEmails[index].summary)
+            guard unlocked else { return }
+            coordinator.markDematRowUnlocked(at: index)
+            await coordinator.processDematRow(at: index, investments: investments)
+        }
+    }
+
+    private func promptForPassword(document: PDFDocument, emailContext: GmailMessageSummary?) async -> Bool {
+        await withCheckedContinuation { continuation in
+            pendingLockedDocument = document
+            pendingLockedEmailContext = emailContext
+            passwordErrorMessage = nil
+            passwordContinuation = continuation
+            showingPasswordPrompt = true
+        }
+    }
+
+    private func attemptUnlock(password: String, savePassword: Bool) {
+        guard let document = pendingLockedDocument else { return }
+        guard document.unlock(withPassword: password) else {
+            passwordErrorMessage = "That password didn't work. Try your date of birth as DDMMYYYY, your PAN, or whatever your broker's own convention is."
+            return
+        }
+        showingPasswordPrompt = false
+        pendingLockedDocument = nil
+
+        if savePassword, let sender = pendingLockedEmailContext?.from {
+            KeychainStore.setDematPassword(password, forSender: sender)
+        }
+
+        if let passwordContinuation {
+            self.passwordContinuation = nil
+            passwordContinuation.resume(returning: true)
+        }
+    }
+
+    // MARK: - Review actions
+
+    private func confirm(_ candidate: DematHoldingReviewCandidate) {
+        guard let investment = candidate.suggestedInvestment else { return }
+        coordinator.confirmDematMatch(candidate, investment: investment)
+    }
+}
+
+/// One review row: instrument name, its parsed invested/current values (for
+/// a sanity check against whichever Investment is suggested), and the
+/// current match — tap it to re-pick, or Confirm/Skip outright.
+private struct DematHoldingRow: View {
+    let candidate: DematHoldingReviewCandidate
+    let onChangeMatch: () -> Void
+    let onConfirm: () -> Void
+    let onSkip: () -> Void
+
+    private static let inrFormat = FloatingPointFormatStyle<Double>.Currency
+        .currency(code: "INR")
+        .locale(Locale(identifier: "en_IN"))
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(candidate.holding.instrumentName)
+                .font(.headline)
+
+            HStack {
+                if let invested = candidate.investedAmount {
+                    Text("Invested \(invested, format: Self.inrFormat)")
+                }
+                Spacer()
+                if let current = candidate.currentValue {
+                    Text("Now \(current, format: Self.inrFormat)")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            if let units = candidate.holding.unitsOrQuantity, !units.isEmpty {
+                Text("\(units) units")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Button(action: onChangeMatch) {
+                if let suggested = candidate.suggestedInvestment {
+                    Label("Matches \(suggested.name)", systemImage: "checkmark.circle")
+                } else {
+                    Label("No match found — tap to pick", systemImage: "questionmark.circle")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(candidate.suggestedInvestment == nil ? .orange : .secondary)
+
+            HStack {
+                Button("Skip", role: .destructive, action: onSkip)
+                    .buttonStyle(.bordered)
+                Spacer()
+                Button("Confirm", action: onConfirm)
+                    .buttonStyle(.borderedProminent)
+                    .tint(.appPrimary)
+                    .disabled(candidate.suggestedInvestment == nil)
+            }
+            .font(.caption)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+/// The "manually re-pick which Investment" flow — a plain list, tap to
+/// assign, done. Reassignment goes straight through the coordinator (same
+/// index-based-mutation approach as its other state) so the review row
+/// updates the instant this dismisses.
+private struct DematInvestmentPickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(EmailFetchCoordinator.self) private var coordinator
+
+    let candidate: DematHoldingReviewCandidate
+    let investments: [Investment]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Button("No Match — Skip This Holding") {
+                    coordinator.reassignDematCandidate(candidate.id, to: nil)
+                    dismiss()
+                }
+                .foregroundStyle(.secondary)
+
+                ForEach(investments) { investment in
+                    Button {
+                        coordinator.reassignDematCandidate(candidate.id, to: investment)
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Text(investment.name)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            if investment.persistentModelID == candidate.suggestedInvestment?.persistentModelID {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.tint)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Which Investment?")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
 #Preview {
     EmailManagementView()
         .environment(EmailFetchCoordinator())
-        .modelContainer(for: [Account.self, Category.self, Transaction.self], inMemory: true)
+        .modelContainer(
+            for: [Account.self, Category.self, Transaction.self, Investment.self, InvestmentOccurrence.self],
+            inMemory: true
+        )
 }

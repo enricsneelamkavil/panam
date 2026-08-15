@@ -30,6 +30,7 @@ struct AddEditRecurringPaymentView: View {
     @State private var hasPerson = false
     @State private var selectedPerson: Person?
     @State private var newPersonName = ""
+    @State private var showingResumeSheet = false
 
     private var isEditing: Bool { payment != nil }
 
@@ -78,7 +79,15 @@ struct AddEditRecurringPaymentView: View {
                 }
 
                 Section {
-                    Toggle("Subscription", isOn: $isSubscription)
+                    // A Toggle labeled "Subscription" never made clear what
+                    // being *off* meant — a menu Picker reads as picking a
+                    // category (what this payment is), not flipping a
+                    // switch. isSubscription itself is unchanged, still a
+                    // plain Bool; this only changes how it's presented.
+                    Picker("Type", selection: $isSubscription) {
+                        Text("Regular Bill").tag(false)
+                        Text("Subscription").tag(true)
+                    }
 
                     if isSubscription {
                         Picker("Necessary?", selection: $isNecessary) {
@@ -89,7 +98,36 @@ struct AddEditRecurringPaymentView: View {
                         .pickerStyle(.segmented)
                     }
 
-                    Toggle("Active", isOn: $isActive)
+                    // isActive itself stays true while paused (see
+                    // RecurringPayment.isPaused's doc comment) — Active
+                    // here is shown off and locked instead of just binding
+                    // straight to isActive, since flipping a plain toggle
+                    // isn't how a paused payment should come back; Resume
+                    // Subscription below is the explicit, confirmed path
+                    // for that.
+                    if payment?.isPaused == true {
+                        Toggle("Active", isOn: .constant(false))
+                            .disabled(true)
+
+                        if let pausedDate = payment?.pausedDate {
+                            Text("Paused since \(pausedDate.formatted(date: .abbreviated, time: .omitted)). Resume to pick it back up.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("This payment is paused. Resume to pick it back up.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Button {
+                            showingResumeSheet = true
+                        } label: {
+                            Label("Resume Subscription", systemImage: "play.circle")
+                        }
+                        .tint(.green)
+                    } else {
+                        Toggle("Active", isOn: $isActive)
+                    }
 
                     Toggle("Autopay", isOn: $autopayEnabled)
                 }
@@ -131,6 +169,12 @@ struct AddEditRecurringPaymentView: View {
                 }
             }
             .onAppear(perform: populateFromPayment)
+            .sheet(isPresented: $showingResumeSheet) {
+                ResumeSubscriptionSheet { restartDate in
+                    resume(restartDate: restartDate)
+                }
+                .presentationDetents([.medium])
+            }
         }
     }
 
@@ -163,6 +207,26 @@ struct AddEditRecurringPaymentView: View {
         let newPerson = Person(name: trimmedName)
         modelContext.insert(newPerson)
         return newPerson
+    }
+
+    /// Confirmed resume action, replacing the old bare toggle-flip: clears
+    /// the paused state, moves the payment's effective start point forward
+    /// to the chosen restart date (generateOccurrences always walks forward
+    /// from `startDate`, so this is what makes it the actual anchor for
+    /// what gets scheduled next), and generates from there. Mutates
+    /// `payment` directly — same as SubscriptionsView's restartSubscription
+    /// — so the resume takes effect immediately without waiting on Save;
+    /// the local @State mirrors are updated too so the rest of this form
+    /// reflects it right away.
+    private func resume(restartDate: Date) {
+        guard let payment else { return }
+        payment.isPaused = false
+        payment.pausedDate = nil
+        payment.startDate = restartDate
+        RecurringOccurrenceGenerator.generateOccurrences(for: payment, context: modelContext)
+
+        startDate = restartDate
+        isActive = payment.isActive
     }
 
     private func save() {
@@ -211,6 +275,53 @@ struct AddEditRecurringPaymentView: View {
             RecurringOccurrenceGenerator.generateOccurrences(for: newPayment, context: modelContext)
         }
         dismiss()
+    }
+}
+
+/// Confirmation for resuming a paused payment — same "explicit, confirmed
+/// action, not a bare toggle" shape as PaymentConfirmationSheet's Mark as
+/// Paid flow, with a restart-date DatePicker in place of an amount field.
+/// A DatePicker doesn't render reliably inside a plain SwiftUI .alert, so
+/// this reuses the sheet-based confirmation pattern already established
+/// elsewhere in the app instead.
+private struct ResumeSubscriptionSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let onConfirm: (Date) -> Void
+
+    @State private var restartDate: Date = .now
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    DatePicker("Restart Date", selection: $restartDate, displayedComponents: .date)
+                } footer: {
+                    Text("Resuming clears the paused state and schedules new occurrences starting from this date.")
+                }
+
+                Button {
+                    onConfirm(restartDate)
+                    dismiss()
+                } label: {
+                    Text("Resume Subscription")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.appPrimary)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets())
+            }
+            .navigationTitle("Resume Subscription")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+            }
+        }
     }
 }
 

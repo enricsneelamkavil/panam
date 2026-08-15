@@ -29,7 +29,10 @@ extension RecurringOccurrence {
 
 enum AutopayProcessor {
     /// Pays every due-or-overdue unpaid occurrence whose template has autopay
-    /// enabled, at the expected amount. Called once on app launch.
+    /// enabled, at the expected amount. Gated behind AutopayCoordinator's
+    /// once-per-day claim (see PanamApp) — call sites must check
+    /// `AutopayCoordinator.claimIfDue()` first, this function itself has no
+    /// idempotency guard and would double-process if invoked twice.
     static func processAutopays(context: ModelContext) {
         let now = Date.now
         let descriptor = FetchDescriptor<RecurringOccurrence>(

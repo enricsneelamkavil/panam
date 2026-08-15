@@ -32,6 +32,20 @@ enum AppSettings {
     /// claimed and skips, rather than backing up twice.
     static let lastAutoBackupDateKey = "lastAutoBackupDate"
 
+    /// Target hour (24-hour, 0–23) for the once-daily autopay run — see
+    /// AutopayCoordinator. Defaults to early morning so autopaid occurrences
+    /// are usually settled before the day's manual entries start.
+    static let autopayHourKey = "autopayHour"
+    static let autopayHourDefault = 6
+
+    /// Last calendar date autopay actually ran, set by whichever trigger
+    /// gets there first each day — PanamApp's .task (cold launch) or its
+    /// on-scenePhase-active check. See AutopayCoordinator.claimIfDue: both
+    /// read/write this same key so the second trigger to fire on a given
+    /// day sees today's already claimed and skips, rather than processing
+    /// autopays twice.
+    static let lastAutopayRunDateKey = "lastAutopayRunDate"
+
     /// Newline-joined list of Gmail sender addresses/domains/keywords to search
     /// for transaction alert emails (e.g. "alerts@hdfcbank.net"). Seeded with a
     /// starting set of common Indian bank alert senders on first launch of the
@@ -70,6 +84,27 @@ enum AppSettings {
     /// common starting set — seeded empty, filled in as you find them.
     static let statementSenderTermsKey = "gmailStatementSenderTerms"
     static let statementSenderTermsDefault = ""
+
+    /// Newline-joined list of Gmail senders/domains to search for demat/
+    /// broker holdings-statement emails (e.g. Upstox's own statement
+    /// sender). Same shape and same rationale as statementSenderTermsKey —
+    /// seeded empty since a broker's sender address is just as
+    /// issuer-specific as a bank's, filled in as you find it.
+    static let dematSenderTermsKey = "gmailDematSenderTerms"
+    static let dematSenderTermsDefault = ""
+
+    /// Newline-joined list of UPI app names a transaction's "UPI App" field
+    /// can be picked from (UPIAppsView's own add/remove list, and the
+    /// Picker in AddEditTransactionView) — same shape as the Gmail
+    /// sender-term lists above. Unlike those, seeded with the common
+    /// India-market apps rather than empty: unlike a bank/broker sender
+    /// address, this set is small, well-known, and stable across users, so
+    /// there's a safe common starting point the same way
+    /// gmailSenderTermsDefault seeds known bank alert senders.
+    static let knownUPIAppsKey = "knownUPIApps"
+    static let knownUPIAppsDefault = [
+        "Google Pay", "PhonePe", "Paytm", "BHIM", "Amazon Pay", "CRED",
+    ].joined(separator: "\n")
 
     /// Splits a newline-joined sender-terms value (gmailSenderTermsKey /
     /// statementSenderTermsKey) into a trimmed, non-empty list — the same

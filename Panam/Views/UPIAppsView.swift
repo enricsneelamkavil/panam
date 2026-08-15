@@ -4,6 +4,23 @@ import SwiftData
 struct UPIAppsView: View {
     @Query(sort: \Transaction.date, order: .reverse) private var transactions: [Transaction]
 
+    /// The known-apps list AddEditTransactionView's "UPI App" Picker draws
+    /// from — separate from upiAppEntries below, which only ever reflects
+    /// apps that have actually shown up on a logged transaction. This one
+    /// exists so an app can be picked the first time it's used, not just
+    /// after.
+    @AppStorage(AppSettings.knownUPIAppsKey)
+    private var knownAppsRaw = AppSettings.knownUPIAppsDefault
+
+    @State private var newAppName = ""
+
+    private var knownApps: [String] {
+        knownAppsRaw
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
     private struct UPIAppEntry: Identifiable {
         let name: String
         let total: Double
@@ -29,36 +46,68 @@ struct UPIAppsView: View {
 
     var body: some View {
         List {
-            ForEach(upiAppEntries) { entry in
-                NavigationLink {
-                    UPIAppTransactionsView(upiApp: entry.name)
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.name)
-                                .font(.body)
-                            Text("\(entry.transactionCount) transaction\(entry.transactionCount == 1 ? "" : "s")")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+            Section {
+                ForEach(knownApps, id: \.self) { name in
+                    Text(name)
+                }
+                .onDelete(perform: removeKnownApps)
+
+                HStack {
+                    TextField("Add UPI App", text: $newAppName)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                    Button("Add", action: addKnownApp)
+                        .disabled(newAppName.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            } header: {
+                Text("Known Apps")
+            } footer: {
+                Text("Apps you can pick from when logging a UPI transaction, whether or not you've used one yet.")
+            }
+
+            Section {
+                if upiAppEntries.isEmpty {
+                    Text("No UPI transactions logged yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(upiAppEntries) { entry in
+                        NavigationLink {
+                            UPIAppTransactionsView(upiApp: entry.name)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.name)
+                                        .font(.body)
+                                    Text("\(entry.transactionCount) transaction\(entry.transactionCount == 1 ? "" : "s")")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                MaskableCurrencyText(amount: entry.total)
+                                    .font(.subheadline.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
                         }
-                        Spacer()
-                        MaskableCurrencyText(amount: entry.total)
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundStyle(.secondary)
                     }
                 }
-            }
-        }
-        .overlay {
-            if upiAppEntries.isEmpty {
-                ContentUnavailableView(
-                    "No UPI Apps",
-                    systemImage: "qrcode",
-                    description: Text("Record a transaction with a UPI app to track spending by app.")
-                )
+            } header: {
+                Text("Spending by App")
             }
         }
         .navigationTitle("UPI Apps")
+    }
+
+    private func addKnownApp() {
+        let trimmed = newAppName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, !knownApps.contains(trimmed) else { return }
+        knownAppsRaw += (knownAppsRaw.isEmpty ? "" : "\n") + trimmed
+        newAppName = ""
+    }
+
+    private func removeKnownApps(at offsets: IndexSet) {
+        var apps = knownApps
+        apps.remove(atOffsets: offsets)
+        knownAppsRaw = apps.joined(separator: "\n")
     }
 }
 

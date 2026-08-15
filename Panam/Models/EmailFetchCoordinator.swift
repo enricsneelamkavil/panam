@@ -14,6 +14,7 @@ import SwiftUI // for IndexSet's remove(atOffsets:), used by removeTransactionCa
 enum FetchKind {
     case transactions
     case statements
+    case dematStatements
 }
 
 /// One row's state in Statement Mails' Fetched Emails list — locked/
@@ -72,6 +73,22 @@ final class EmailFetchCoordinator {
     private(set) var statementMatchedCount = 0
     private(set) var statementTotalCount = 0
     private(set) var statementUnmatched: [StatementReconciliationCandidate] = []
+
+    // MARK: Demat Statements results
+
+    /// Same FetchedStatementEmail/FetchedEmailStatus shape Statement Mails
+    /// uses — a summary + downloaded PDF + lock/processing status is just
+    /// as accurate a description for a demat holdings statement email as a
+    /// bank one, so this reuses the type directly rather than declaring a
+    /// near-identical one.
+    private(set) var fetchedDematEmails: [FetchedStatementEmail] = []
+    private(set) var dematTotalHoldingsCount = 0
+    /// Holdings whose extracted instrument name exactly matched an
+    /// Investment's already-remembered upstoxHoldingName — applied straight
+    /// through with no review, which is the whole point of remembering that
+    /// mapping in the first place. See processDematRow/confirmDematMatch.
+    private(set) var dematAutoUpdatedCount = 0
+    private(set) var dematReviewCandidates: [DematHoldingReviewCandidate] = []
 
     /// The currently-running fetch, kept only so cancelFetch() can call
     /// task?.cancel() — never awaited directly, nothing needs to block on
@@ -413,5 +430,166 @@ final class EmailFetchCoordinator {
 
     func removeStatementUnmatched(at offsets: IndexSet) {
         statementUnmatched.remove(atOffsets: offsets)
+    }
+
+    // MARK: - Demat Statements (Gmail batch fetch)
+
+    /// Mirrors startStatementFetch/runStatementFetch exactly — same
+    /// download-everything-then-settle-lock-status-then-process shape (see
+    /// that method's doc comment) — swapping StatementReconciler's
+    /// extract→reconcile pipeline for DematHoldingExtractor's
+    /// extract→match one. No manual-PDF-pick counterpart exists here (out
+    /// of scope for the first pass): every locked Demat PDF's password is
+    /// attributed to the Gmail row it came from, never to a bare document.
+    func startDematFetch(senderTerms: [String], investments: [Investment]) {
+        guard !isFetching else { return }
+        isFetching = true
+        fetchType = .dematStatements
+        fetchErrorMessage = nil
+        fetchedDematEmails = []
+        dematTotalHoldingsCount = 0
+        dematAutoUpdatedCount = 0
+        dematReviewCandidates = []
+        processedCount = 0
+        totalCount = 0
+        fetchStartedAt = nil
+
+        Task { await NotificationManager.shared.requestAuthorizationIfNeeded() }
+
+        task = Task { [weak self] in
+            await self?.runDematFetch(senderTerms: senderTerms, investments: investments)
+        }
+    }
+
+    private func runDematFetch(senderTerms: [String], investments: [Investment]) async {
+        do {
+            let summaries = try await GmailFetcher.searchStatementEmails(senderTerms: senderTerms)
+            guard !Task.isCancelled else { return }
+            guard !summaries.isEmpty else {
+                fetchErrorMessage = "No demat statement emails found for these senders in the last 6 months."
+                isFetching = false
+                fetchType = nil
+                return
+            }
+            totalCount = summaries.count
+            fetchStartedAt = .now
+
+            for summary in summaries {
+                guard !Task.isCancelled else { return }
+                guard let data = try? await GmailFetcher.downloadAttachment(
+                    messageID: summary.id, attachmentID: summary.attachmentID
+                ), let document = PDFDocument(data: data) else {
+                    fetchedDematEmails.append(FetchedStatementEmail(
+                        summary: summary, document: nil,
+                        status: .failed("Couldn't read this attachment as a PDF.")
+                    ))
+                    processedCount += 1
+                    continue
+                }
+                // Keyed by sender rather than an Account's last-4 — see
+                // KeychainStore's Demat statement PDF passwords section.
+                if document.isLocked, let savedPassword = KeychainStore.dematPassword(forSender: summary.from) {
+                    _ = document.unlock(withPassword: savedPassword)
+                }
+                fetchedDematEmails.append(FetchedStatementEmail(
+                    summary: summary, document: document,
+                    status: document.isLocked ? .locked : .unlocked
+                ))
+                processedCount += 1
+            }
+
+            for index in fetchedDematEmails.indices where fetchedDematEmails[index].status == .unlocked {
+                guard !Task.isCancelled else { return }
+                await processDematRow(at: index, investments: investments)
+            }
+
+            guard !Task.isCancelled else { return }
+            isFetching = false
+            fetchType = nil
+            NotificationManager.shared.notifyFetchComplete(
+                kind: "Demat Holdings", newCount: dematReviewCandidates.count
+            )
+        } catch {
+            guard !Task.isCancelled else { return }
+            isFetching = false
+            fetchType = nil
+            fetchErrorMessage = error.localizedDescription
+        }
+    }
+
+    /// Runs one fetched email's unlocked PDF through extract → match,
+    /// mirroring processRow(at:accounts:transactions:) above. A holding
+    /// whose exact instrument name is already remembered on some Investment
+    /// (upstoxHoldingName) updates that Investment directly, right here, no
+    /// review needed — everything else becomes a DematHoldingReviewCandidate
+    /// instead. Public for the same reason processRow is: DematStatementsSheet
+    /// calls this directly for the password-prompt-driven path, outside
+    /// runDematFetch's own loop.
+    func processDematRow(at index: Int, investments: [Investment]) async {
+        guard fetchedDematEmails.indices.contains(index), let document = fetchedDematEmails[index].document else { return }
+        fetchedDematEmails[index].status = .processing
+        do {
+            let text = try StatementReconciler.extractText(from: document)
+            let holdings = try await DematHoldingExtractor.extractHoldings(from: text)
+            dematTotalHoldingsCount += holdings.count
+
+            for holding in holdings {
+                let invested = DematHoldingExtractor.parseAmount(holding.investedAmountString)
+                let current = DematHoldingExtractor.parseAmount(holding.currentValueString)
+
+                if let remembered = investments.first(where: { $0.upstoxHoldingName == holding.instrumentName }) {
+                    remembered.currentValue = current
+                    remembered.lastValuationDate = .now
+                    dematAutoUpdatedCount += 1
+                } else {
+                    let suggested = DematHoldingExtractor.matchInvestment(for: holding, in: investments)
+                    dematReviewCandidates.append(DematHoldingReviewCandidate(
+                        holding: holding, investedAmount: invested, currentValue: current,
+                        suggestedInvestment: suggested
+                    ))
+                }
+            }
+            fetchedDematEmails[index].status = .done
+        } catch {
+            fetchedDematEmails[index].status = .failed(error.localizedDescription)
+        }
+    }
+
+    func markDematRowUnlocked(at index: Int) {
+        guard fetchedDematEmails.indices.contains(index) else { return }
+        fetchedDematEmails[index].status = .unlocked
+    }
+
+    /// DematStatementsSheet's "Change Match" picker calls this to update a
+    /// still-pending candidate's suggestion in place — index-based mutation
+    /// of the stored array (same pattern fetchedEmails[index].status = ...
+    /// uses above) so the reactive row actually re-renders.
+    func reassignDematCandidate(_ candidateID: UUID, to investment: Investment?) {
+        guard let index = dematReviewCandidates.firstIndex(where: { $0.id == candidateID }) else { return }
+        dematReviewCandidates[index].suggestedInvestment = investment
+    }
+
+    /// The confirmed-match action: writes currentValue/lastValuationDate and
+    /// remembers upstoxHoldingName so every later statement's identical
+    /// instrument name auto-updates from here on (see processDematRow's
+    /// remembered-match branch) — investedValue/totalContributed are never
+    /// touched, by design (see Investment.currentValue's doc comment).
+    func confirmDematMatch(_ candidate: DematHoldingReviewCandidate, investment: Investment) {
+        investment.upstoxHoldingName = candidate.holding.instrumentName
+        investment.currentValue = candidate.currentValue
+        investment.lastValuationDate = .now
+        dematReviewCandidates.removeAll { $0.id == candidate.id }
+    }
+
+    /// Dismisses a candidate without applying it — "not a holding I track in
+    /// Panam," same non-destructive intent as deleteUnmatched/
+    /// deleteCandidates elsewhere: nothing's been saved yet, so free to
+    /// reappear on a later fetch.
+    func skipDematCandidate(_ candidate: DematHoldingReviewCandidate) {
+        dematReviewCandidates.removeAll { $0.id == candidate.id }
+    }
+
+    func removeDematCandidates(at offsets: IndexSet) {
+        dematReviewCandidates.remove(atOffsets: offsets)
     }
 }

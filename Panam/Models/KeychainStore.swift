@@ -63,6 +63,28 @@ enum KeychainStore {
         set(password, forKey: statementPasswordKey(lastFourDigits: lastFourDigits))
     }
 
+    // MARK: - Demat statement PDF passwords
+
+    /// Same idea as statement PDF passwords above, but keyed by the
+    /// statement email's sender address rather than an Account's last-4 — a
+    /// demat/broker holdings statement isn't tied to any bank Account in
+    /// Panam, so there's no last-4 to key off. The sender address plays the
+    /// same "which issuer is this" role instead: stable for a given broker
+    /// over time, and already known the moment a statement email is found —
+    /// before any holding has even been matched to an Investment, let alone
+    /// confirmed (see Investment.upstoxHoldingName).
+    private static func dematPasswordKey(senderKey: String) -> String {
+        "dematPassword_\(senderKey.trimmingCharacters(in: .whitespaces).lowercased())"
+    }
+
+    static func dematPassword(forSender senderKey: String) -> String? {
+        string(forKey: dematPasswordKey(senderKey: senderKey))
+    }
+
+    static func setDematPassword(_ password: String, forSender senderKey: String) {
+        set(password, forKey: dematPasswordKey(senderKey: senderKey))
+    }
+
     private static func set(_ data: Data, forKey key: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,

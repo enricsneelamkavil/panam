@@ -104,7 +104,6 @@ struct PanamApp: App {
         MoneyEventMigration.runSourceTransactionBackfillIfNeeded(context: sharedModelContainer.mainContext)
         BackupIDBackfill.runIfNeeded(context: sharedModelContainer.mainContext)
         TransactionOrphanCleanup.runIfNeeded(context: sharedModelContainer.mainContext)
-        AutopayProcessor.processAutopays(context: sharedModelContainer.mainContext)
 
         // Registration must happen unconditionally, before launch finishes,
         // regardless of whether auto-backup is currently toggled on —
@@ -165,6 +164,16 @@ struct PanamApp: App {
         await DriveBackupManager().backupNow(context: sharedModelContainer.mainContext)
     }
 
+    /// Autopay's once-per-day counterpart to runAutoBackupIfDue above, same
+    /// two-trigger shape (.task for cold launch, scenePhase .active as the
+    /// backstop) gated by AutopayCoordinator instead of AutoBackupCoordinator
+    /// — see that type's doc comment. Synchronous, unlike the backup version,
+    /// since AutopayProcessor does no async work of its own.
+    private func runAutopayIfDue() {
+        guard AutopayCoordinator.claimIfDue() else { return }
+        AutopayProcessor.processAutopays(context: sharedModelContainer.mainContext)
+    }
+
     var body: some Scene {
         WindowGroup {
             Group {
@@ -194,6 +203,14 @@ struct PanamApp: App {
                 GIDSignIn.sharedInstance.handle(url)
             }
             .task {
+                // Independent of GIDSignIn/Gmail entirely — doesn't need to
+                // wait for restorePreviousSignIn below, unlike the
+                // statement check. Covers plain cold launch; the scenePhase
+                // .active case further down is the backstop for resuming
+                // from background, mirroring runAutoBackupIfDue's two
+                // triggers exactly (see AutopayCoordinator).
+                runAutopayIfDue()
+
                 // Silently restores GIDSignIn's session (for
                 // gmailAuth.signedInEmail) — irrelevant to authState.authMode
                 // above, which is gated purely on the persisted Keychain
@@ -236,6 +253,7 @@ struct PanamApp: App {
                 // background is exactly the "opened the app" moment this
                 // backstop exists for, whether or not biometric lock is on.
                 if newPhase == .active {
+                    runAutopayIfDue()
                     Task { await runAutoBackupIfDue() }
                 }
             }

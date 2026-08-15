@@ -371,6 +371,7 @@ private struct FetchStatusPill: View {
         switch coordinator.fetchType {
         case .transactions: return "Fetching transaction mails"
         case .statements: return "Fetching statements"
+        case .dematStatements: return "Fetching demat statements"
         case nil: return "Fetching"
         }
     }

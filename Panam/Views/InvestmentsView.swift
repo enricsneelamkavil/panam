@@ -7,12 +7,35 @@ import SwiftUI
 import SwiftData
 import Charts
 
+extension InstrumentType {
+    /// Fixed per-type color for the breakdown chart/legend below — same
+    /// "assign in a stable order, reserve gray for the catch-all bucket"
+    /// convention DashboardView.barPalette/CategoryColorAssigner already
+    /// use for spending categories (.other here plays the same role
+    /// "Uncategorized" does there). Deliberately not Swift Charts' own
+    /// automatic categorical assignment (foregroundStyle(by:)) — this
+    /// drives both the pie sectors and the custom legend directly, so the
+    /// two can never disagree on which color is which type.
+    var chartColor: Color {
+        switch self {
+        case .mutualFund: .blue
+        case .stock: .green
+        case .epf: .orange
+        case .gold: .purple
+        case .silver: .pink
+        case .chitFund: .red
+        case .recurringDeposit: .yellow
+        case .platinum: .teal
+        case .other: .gray
+        }
+    }
+}
+
 struct InvestmentsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Investment.date, order: .reverse) private var investments: [Investment]
 
     @State private var showingAddSheet = false
-    @State private var investmentToEdit: Investment?
 
     private var totalInvested: Double {
         investments.reduce(0) { $0 + $1.investedValue }
@@ -45,18 +68,25 @@ struct InvestmentsView: View {
                             let typeInvestments = investments.filter { $0.instrumentType == entry.type }
                             Section(entry.type.displayName) {
                                 ForEach(typeInvestments) { investment in
-                                    if investment.isRecurring {
-                                        NavigationLink {
-                                            InvestmentDetailView(investment: investment)
-                                        } label: {
+                                    // Same NavigationLink → InvestmentDetailView
+                                    // for both now — lumpsum used to jump
+                                    // straight to the edit sheet, but that
+                                    // skipped the one place Returns (from a
+                                    // confirmed Demat Statements match) is
+                                    // shown. InvestmentDetailView itself hides
+                                    // everything recurring-only (Occurrences,
+                                    // "Next," contributed-so-far) when
+                                    // !isRecurring, and still offers Edit from
+                                    // its toolbar for changing amount/date/
+                                    // account either way.
+                                    NavigationLink {
+                                        InvestmentDetailView(investment: investment)
+                                    } label: {
+                                        if investment.isRecurring {
                                             RecurringInvestmentRow(investment: investment)
+                                        } else {
+                                            InvestmentRow(investment: investment)
                                         }
-                                    } else {
-                                        InvestmentRow(investment: investment)
-                                            .contentShape(Rectangle())
-                                            .onTapGesture {
-                                                investmentToEdit = investment
-                                            }
                                     }
                                 }
                                 .onDelete { offsets in
@@ -82,9 +112,6 @@ struct InvestmentsView: View {
             .sheet(isPresented: $showingAddSheet) {
                 AddEditInvestmentView()
             }
-            .sheet(item: $investmentToEdit) { investment in
-                AddEditInvestmentView(investment: investment)
-            }
         }
     }
 
@@ -105,13 +132,46 @@ struct InvestmentsView: View {
                     angularInset: 1.5
                 )
                 .cornerRadius(3)
-                .foregroundStyle(by: .value("Type", entry.type.displayName))
+                .foregroundStyle(entry.type.chartColor)
             }
-            .chartLegend(position: .bottom, alignment: .center)
-            .frame(height: 200)
+            .frame(height: 180)
+
+            legend
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 4)
+    }
+
+    /// Swift Charts' built-in .chartLegend has no public hook for
+    /// lineLimit/truncation on the labels it generates — with instrument
+    /// names as long as "Recurring Deposit," its flow layout sometimes
+    /// wraps at the wrong point and the last entry on a row pokes past the
+    /// card's trailing edge instead of moving to the next line (visible
+    /// once enough instrument types are populated to need real wrapping).
+    /// A LazyVGrid gives every entry a real, fixed-width cell instead of a
+    /// flow-computed one, so .lineLimit(1)/.truncationMode(.tail) has an
+    /// actual width to truncate against — the overflow becomes structurally
+    /// impossible rather than just less likely.
+    private var legend: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 96, maximum: 150), spacing: 12, alignment: .leading)],
+            alignment: .leading,
+            spacing: 8
+        ) {
+            ForEach(typeTotals, id: \.type) { entry in
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(entry.type.chartColor)
+                        .frame(width: 8, height: 8)
+                    Text(entry.type.displayName)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 4)
     }
 
     private func deleteInvestments(at offsets: IndexSet, from typeInvestments: [Investment]) {

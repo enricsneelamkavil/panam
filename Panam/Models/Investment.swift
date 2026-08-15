@@ -19,6 +19,26 @@ final class Investment {
     /// Amount already invested before tracking started, for recurring investments only.
     var priorAmount: Double = 0
 
+    /// What this holding is actually worth right now — separate from
+    /// investedValue/totalContributed, which are pure contribution history
+    /// (money put in) and never move on their own. currentValue only ever
+    /// changes via a confirmed Demat Statements match (see
+    /// EmailFetchCoordinator.confirmDematMatch); nil until the first one.
+    /// First-ever investment performance tracking in Panam — previously
+    /// deferred, see the product-requirements doc.
+    var currentValue: Double?
+    /// When currentValue was last set — the moment a Demat Statements
+    /// holding was confirmed/auto-matched against this Investment, not the
+    /// statement's own printed date (see DematHoldingExtractor's doc
+    /// comment on why the statement date itself isn't extracted).
+    var lastValuationDate: Date?
+    /// The exact instrument name text a Demat Statements holding matched
+    /// against, remembered the first time a match is confirmed for this
+    /// Investment (EmailFetchCoordinator.confirmDematMatch) so every later
+    /// statement's identical name auto-updates currentValue/lastValuationDate
+    /// without asking again. nil until that first confirmation.
+    var upstoxHoldingName: String?
+
     @Relationship(deleteRule: .cascade, inverse: \InvestmentOccurrence.parent)
     var occurrences: [InvestmentOccurrence] = []
 

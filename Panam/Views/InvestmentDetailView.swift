@@ -6,8 +6,14 @@
 import SwiftUI
 import SwiftData
 
-/// Detail for a recurring (SIP-style) investment — lumpsums open the edit
-/// sheet directly and never land here.
+/// Detail for any Investment, lumpsum or recurring (SIP-style) alike —
+/// InvestmentsView routes both here now. Recurring-only content (cadence,
+/// "Next" due date, contributed-so-far, the Occurrences list) only shows
+/// when investment.isRecurring; a lumpsum investment shows just its basic
+/// info (instrument, amount, date) plus Returns below, once any Demat
+/// Statements match has been confirmed for it. Either way, Edit (toolbar)
+/// is still how amount/date/account get changed — this view itself never
+/// mutates those.
 struct InvestmentDetailView: View {
     let investment: Investment
 
@@ -31,57 +37,117 @@ struct InvestmentDetailView: View {
             .dueDate
     }
 
+    /// "Money in" vs. "what it's worth now" — nil (section hidden entirely)
+    /// until a Demat Statements match has actually been confirmed at least
+    /// once (Investment.currentValue's doc comment).
+    private var returnsAmount: Double? {
+        guard let currentValue = investment.currentValue else { return nil }
+        return currentValue - investment.investedValue
+    }
+
+    private var returnsPercent: Double? {
+        guard let returnsAmount, investment.investedValue != 0 else { return nil }
+        return (returnsAmount / investment.investedValue) * 100
+    }
+
     var body: some View {
         List {
             Section {
                 LabeledContent("Instrument", value: investment.instrumentType.displayName)
-                if let cadence = investment.cadence {
-                    LabeledContent("Cadence", value: cadence.displayName)
-                }
-                if let nextDueDate {
-                    LabeledContent("Next") {
-                        Text(nextDueDate, format: .dateTime.day().month(.abbreviated).year())
+
+                if investment.isRecurring {
+                    if let cadence = investment.cadence {
+                        LabeledContent("Cadence", value: cadence.displayName)
+                    }
+                    if let nextDueDate {
+                        LabeledContent("Next") {
+                            Text(nextDueDate, format: .dateTime.day().month(.abbreviated).year())
+                        }
+                    }
+                    if investment.autopayEnabled {
+                        HStack {
+                            Text("Autopay")
+                            Spacer()
+                            Image(systemName: "a.circle.fill")
+                                .foregroundStyle(.tint)
+                        }
+                    }
+                } else {
+                    // Lumpsum has no due-date/cadence concept — just when
+                    // the money actually moved.
+                    LabeledContent("Date") {
+                        Text(investment.date, format: .dateTime.day().month(.abbreviated).year())
                     }
                 }
-                if investment.autopayEnabled {
-                    HStack {
-                        Text("Autopay")
-                        Spacer()
-                        Image(systemName: "a.circle.fill")
-                            .foregroundStyle(.tint)
-                    }
-                }
-                LabeledContent("Amount per Installment") {
+
+                LabeledContent(investment.isRecurring ? "Amount per Installment" : "Amount") {
                     Text(investment.amount, format: Self.currencyFormat)
                 }
-                if investment.priorAmount > 0 {
-                    LabeledContent("Starting Amount") {
-                        Text(investment.priorAmount, format: Self.currencyFormat)
+
+                if investment.isRecurring {
+                    if investment.priorAmount > 0 {
+                        LabeledContent("Starting Amount") {
+                            Text(investment.priorAmount, format: Self.currencyFormat)
+                        }
                     }
-                }
-                LabeledContent("Total Contributed") {
-                    Text(investment.totalContributed, format: Self.currencyFormat)
-                }
-                if !investment.isActive {
-                    Text("Paused")
-                        .foregroundStyle(.orange)
+                    LabeledContent("Total Contributed") {
+                        Text(investment.totalContributed, format: Self.currencyFormat)
+                    }
+                    if !investment.isActive {
+                        Text("Paused")
+                            .foregroundStyle(.orange)
+                    }
                 }
             }
 
-            Section("Occurrences") {
-                ForEach(sortedOccurrences) { occurrence in
-                    Button {
-                        selectedOccurrence = occurrence
-                    } label: {
-                        OccurrenceRow(occurrence: occurrence)
+            // Clearly separate from the Section above — Invested there is
+            // pure contribution history and never moves on its own;
+            // everything here is the current-worth figure a confirmed Demat
+            // Statements match writes (see Investment.currentValue).
+            if let currentValue = investment.currentValue, let returnsAmount {
+                Section {
+                    LabeledContent("Current Value") {
+                        Text(currentValue, format: Self.currencyFormat)
                     }
-                    .buttonStyle(.plain)
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        if occurrence.isContributed {
-                            Button(role: .destructive) {
-                                markUnpaid(occurrence)
-                            } label: {
-                                Label("Mark as Unpaid", systemImage: "arrow.uturn.backward")
+                    LabeledContent("Returns") {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("\(returnsAmount >= 0 ? "+" : "−")\(abs(returnsAmount), format: Self.currencyFormat)")
+                                .foregroundStyle(returnsAmount >= 0 ? .green : .red)
+                            if let returnsPercent {
+                                Text("\(returnsPercent >= 0 ? "+" : "−")\(abs(returnsPercent).formatted(.number.precision(.fractionLength(1))))%")
+                                    .font(.caption)
+                                    .foregroundStyle(returnsAmount >= 0 ? .green : .red)
+                            }
+                        }
+                    }
+                    if let lastValuationDate = investment.lastValuationDate {
+                        LabeledContent("As Of") {
+                            Text(lastValuationDate, format: .dateTime.day().month(.abbreviated).year())
+                        }
+                    }
+                } header: {
+                    Text("Returns")
+                } footer: {
+                    Text("What this investment is actually worth right now, from your last confirmed Demat Statements match — separate from Invested above, which is only what you've put in.")
+                }
+            }
+
+            if investment.isRecurring {
+                Section("Occurrences") {
+                    ForEach(sortedOccurrences) { occurrence in
+                        Button {
+                            selectedOccurrence = occurrence
+                        } label: {
+                            OccurrenceRow(occurrence: occurrence)
+                        }
+                        .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            if occurrence.isContributed {
+                                Button(role: .destructive) {
+                                    markUnpaid(occurrence)
+                                } label: {
+                                    Label("Mark as Unpaid", systemImage: "arrow.uturn.backward")
+                                }
                             }
                         }
                     }
