@@ -7,9 +7,36 @@
 import SwiftUI
 import SwiftData
 import GoogleSignIn
+import UserNotifications
+
+/// The one piece of app-delegate-era API SwiftUI's App protocol has no
+/// direct equivalent for: handleEventsForBackgroundURLSession only ever
+/// gets called on a real UIApplicationDelegate, so this exists purely to
+/// receive it and hand the completion handler off to
+/// BackgroundDownloadManager — see that type's doc comment for what
+/// happens with it from there. Nothing else about app launch runs through
+/// here; PanamApp.init() and .task below still own that.
+final class PanamAppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        guard identifier == BackgroundDownloadManager.sessionIdentifier else {
+            // Not our session (nothing else in Panam uses a background
+            // URLSession) — still have to call the handler, just nothing
+            // to stash it against.
+            completionHandler()
+            return
+        }
+        BackgroundDownloadManager.shared.backgroundCompletionHandler = completionHandler
+    }
+}
 
 @main
 struct PanamApp: App {
+    @UIApplicationDelegateAdaptor(PanamAppDelegate.self) private var appDelegate
+
     @Environment(\.scenePhase) private var scenePhase
 
     /// authMode is a real stored property (see AuthState), so the login
@@ -56,6 +83,13 @@ struct PanamApp: App {
     }()
 
     init() {
+        // Set before any notification could possibly fire — the fetch-
+        // complete notification can arrive within moments of launch if a
+        // background download resumed and finished right away, and the
+        // delegate has to already be in place for willPresent's
+        // foreground-banner override (see NotificationManager) to apply.
+        UNUserNotificationCenter.current().delegate = NotificationManager.shared
+
         GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: GmailAuthManager.clientID)
         // Must run before AuthState() below reads its persisted authMode —
         // carries an existing user's legacy Google-only login forward so

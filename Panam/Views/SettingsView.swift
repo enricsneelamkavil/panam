@@ -17,6 +17,39 @@ struct SettingsView: View {
     @AppStorage(AppSettings.biometricLockEnabledKey)
     private var biometricLockEnabled = AppSettings.biometricLockEnabledDefault
 
+    @AppStorage(AppSettings.dailyReminderEnabledKey)
+    private var dailyReminderEnabled = AppSettings.dailyReminderEnabledDefault
+
+    @AppStorage(AppSettings.dailyReminderHourKey)
+    private var dailyReminderHour = AppSettings.dailyReminderHourDefault
+
+    @AppStorage(AppSettings.dailyReminderMinuteKey)
+    private var dailyReminderMinute = AppSettings.dailyReminderMinuteDefault
+
+    /// DatePicker needs a Date binding, but the setting itself is stored as
+    /// a plain hour/minute pair (no meaningful "day" — it's a daily
+    /// recurring time, not a one-off moment) — this bridges the two
+    /// without a third piece of stored state to keep in sync. Today's date
+    /// is an arbitrary anchor; only the hour/minute components ever get
+    /// read back out of it.
+    private var reminderTime: Binding<Date> {
+        Binding(
+            get: {
+                Calendar.current.date(
+                    bySettingHour: dailyReminderHour, minute: dailyReminderMinute, second: 0, of: .now
+                ) ?? .now
+            },
+            set: { newDate in
+                let components = Calendar.current.dateComponents([.hour, .minute], from: newDate)
+                dailyReminderHour = components.hour ?? AppSettings.dailyReminderHourDefault
+                dailyReminderMinute = components.minute ?? AppSettings.dailyReminderMinuteDefault
+                if dailyReminderEnabled {
+                    NotificationManager.shared.scheduleDailyReminder(hour: dailyReminderHour, minute: dailyReminderMinute)
+                }
+            }
+        )
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -63,6 +96,26 @@ struct SettingsView: View {
                         Text("30 minutes").tag(30)
                         Text("Never").tag(0)
                     }
+                }
+
+                Section {
+                    Toggle("Daily Reminder", isOn: $dailyReminderEnabled)
+                        .onChange(of: dailyReminderEnabled) { _, isOn in
+                            if isOn {
+                                Task {
+                                    await NotificationManager.shared.requestAuthorizationIfNeeded()
+                                    NotificationManager.shared.scheduleDailyReminder(hour: dailyReminderHour, minute: dailyReminderMinute)
+                                }
+                            } else {
+                                NotificationManager.shared.cancelDailyReminder()
+                            }
+                        }
+
+                    if dailyReminderEnabled {
+                        DatePicker("Time", selection: reminderTime, displayedComponents: .hourAndMinute)
+                    }
+                } footer: {
+                    Text("A daily notification reminding you to log today's transactions. Off by default — not everyone wants a nudge.")
                 }
 
             }

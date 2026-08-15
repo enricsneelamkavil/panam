@@ -113,6 +113,13 @@ final class EmailFetchCoordinator {
         fetchStartedAt = nil
         transactionCandidates = []
 
+        // A no-op after the first time the user's answered the system
+        // prompt either way — see requestAuthorizationIfNeeded. Fired here
+        // (rather than only from Settings) so a fetch-complete notification
+        // has permission to actually show by the time this same fetch
+        // finishes, without requiring a trip to Settings first.
+        Task { await NotificationManager.shared.requestAuthorizationIfNeeded() }
+
         task = Task { [weak self] in
             await self?.runTransactionFetch(
                 senderTerms: senderTerms, categories: categories, accounts: accounts, transactions: transactions
@@ -132,6 +139,17 @@ final class EmailFetchCoordinator {
             var results: [EmailTransactionCandidate] = []
             for message in messages {
                 guard !Task.isCancelled else { return }
+                // Cheap keyword/structure screen before the email ever
+                // reaches the model — promotional/T&Cs/fee-notice mail
+                // never gets this far, so it never costs a model call and
+                // never has a chance to show up as a bogus candidate. See
+                // looksLikeTransactionAlert's doc comment.
+                guard EmailTransactionParser.looksLikeTransactionAlert(
+                    emailBody: message.bodyText, subject: message.subject
+                ) else {
+                    processedCount += 1
+                    continue
+                }
                 do {
                     let parsedRaw = try await EmailTransactionParser.parse(
                         emailBody: message.bodyText,
@@ -139,6 +157,17 @@ final class EmailFetchCoordinator {
                         categories: categories,
                         accounts: accounts
                     )
+                    // The model's own "is this actually a transaction" gate
+                    // — same intent as the pre-filter above, but able to
+                    // catch what the keyword screen alone can't (e.g. a
+                    // promo email that happens to cite one specific-looking
+                    // amount). A false negative here is silently dropped
+                    // rather than shown, so it never has to be manually
+                    // rejected in the review list.
+                    guard parsedRaw.isGenuineTransaction else {
+                        processedCount += 1
+                        continue
+                    }
                     // Deterministic post-processing, not part of the
                     // model's own output — see matchRefund's doc comment.
                     let (parsed, matchedRefund) = EmailTransactionParser.matchRefund(
@@ -171,6 +200,16 @@ final class EmailFetchCoordinator {
             guard !Task.isCancelled else { return }
             isFetching = false
             fetchType = nil
+            // Fires whether or not anyone's watching this screen right
+            // now — the whole point of routing statement downloads
+            // through a background URLSession is that a fetch can finish
+            // while Transaction Mails isn't even on screen, so this is
+            // often the only signal the fetch ever completed. Counts
+            // successfully parsed candidates only; a parse failure isn't
+            // a "transaction found."
+            NotificationManager.shared.notifyFetchComplete(
+                kind: "Transaction", newCount: results.filter { $0.parsed != nil }.count
+            )
         } catch {
             guard !Task.isCancelled else { return }
             fetchErrorMessage = error.localizedDescription
@@ -204,6 +243,8 @@ final class EmailFetchCoordinator {
         processedCount = 0
         totalCount = 0
         fetchStartedAt = nil
+
+        Task { await NotificationManager.shared.requestAuthorizationIfNeeded() }
 
         task = Task { [weak self] in
             await self?.runStatementFetch(senderTerms: senderTerms, accounts: accounts, transactions: transactions)
@@ -267,6 +308,14 @@ final class EmailFetchCoordinator {
             guard !Task.isCancelled else { return }
             isFetching = false
             fetchType = nil
+            // Same rationale as runTransactionFetch's notification — a
+            // statement's attachment download is the one request in this
+            // whole pipeline that can genuinely keep running after the
+            // app backgrounds (see BackgroundDownloadManager), so this is
+            // often the only signal the user gets that it's done.
+            // statementUnmatched was reset to [] at the top of
+            // startStatementFetch, so its count here is entirely this run's.
+            NotificationManager.shared.notifyFetchComplete(kind: "Statement", newCount: statementUnmatched.count)
         } catch {
             guard !Task.isCancelled else { return }
             isFetching = false

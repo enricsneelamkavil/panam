@@ -126,10 +126,15 @@ enum GmailFetcher {
     /// Gmail returns the content base64url-encoded, same alphabet as message
     /// bodies but decoded here straight to Data (an attachment is binary,
     /// not necessarily valid UTF-8 text like a message body is).
+    ///
+    /// Routed through BackgroundDownloadManager rather than the plain
+    /// get(_:accessToken:) every other call in this file uses — a
+    /// statement attachment is the one Gmail request worth surviving the
+    /// app being backgrounded mid-download; see that type's doc comment.
     static func downloadAttachment(messageID: String, attachmentID: String) async throws -> Data {
         let accessToken = try await currentAccessToken()
         let url = URL(string: "\(apiBase)/messages/\(messageID)/attachments/\(attachmentID)")!
-        let responseData = try await get(url, accessToken: accessToken)
+        let responseData = try await BackgroundDownloadManager.shared.download(url, accessToken: accessToken)
         let decoded = try JSONDecoder().decode(AttachmentResponse.self, from: responseData)
         guard let pdfData = decodeBase64URLData(decoded.data) else {
             throw GmailFetchError.decoding
@@ -308,8 +313,23 @@ enum GmailFetcher {
         return Data(base64Encoded: base64)
     }
 
+    /// Strips markup down to plain text. Only text/plain or text/html parts
+    /// ever reach here (see extractBodyText/findPart) — image parts and
+    /// attachments live in separate MIME parts that are never selected, and
+    /// an <img> tag's alt text/src (including any inline base64 data: URI)
+    /// is inside the tag itself, so the "<[^>]+>" strip below removes it
+    /// along with the rest of the tag rather than leaking it as text.
+    /// <script>/<style> blocks are the one thing that DOES leak that way —
+    /// their content sits between the tags, not inside them — so those are
+    /// dropped wholesale first; otherwise CSS/JS noise ends up looking like
+    /// body text to both the pre-filter and the model.
     private static func stripHTMLTags(_ html: String) -> String {
-        let withoutTags = html.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        let withoutScriptsAndStyles = html.replacingOccurrences(
+            of: #"(?is)<(script|style)\b[^>]*>.*?</\1>"#,
+            with: " ",
+            options: .regularExpression
+        )
+        let withoutTags = withoutScriptsAndStyles.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
         let unescaped = withoutTags
             .replacingOccurrences(of: "&nbsp;", with: " ")
             .replacingOccurrences(of: "&amp;", with: "&")

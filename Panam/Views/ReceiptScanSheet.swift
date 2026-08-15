@@ -331,7 +331,8 @@ struct ReceiptScanSheet: View {
             merchantName: trimmedMerchant.isEmpty ? nil : trimmedMerchant,
             lastFourDigits: reviewLastFourDigits,
             resolvedDateString: Self.isoDateFormat.string(from: reviewDate),
-            paymentMethodName: reviewPaymentMethod?.rawValue
+            paymentMethodName: reviewPaymentMethod?.rawValue,
+            isGenuineTransaction: true
         )
         onParsed(parsed)
         dismiss()

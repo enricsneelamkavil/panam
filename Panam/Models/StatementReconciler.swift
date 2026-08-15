@@ -10,7 +10,7 @@ import FoundationModels
 /// rarely states either.
 @Generable
 struct StatementLineItem {
-    @Guide(description: "The transaction date as printed, resolved to yyyy-MM-dd (ISO 8601)")
+    @Guide(description: "The transaction date, converted to STRICT yyyy-MM-dd (ISO 8601) format only — 4-digit year, then 2-digit month, then 2-digit day, separated by hyphens. Do NOT copy the date the way it's printed on the statement: a date printed as \"14/07/2026\", \"14-07-2026\", or \"14 Jul 2026\" must all be converted and written as \"2026-07-14\". Never day-first, never slash-separated, never a month name in the output.")
     var dateString: String
 
     @Guide(description: "The transaction amount as a positive number, regardless of how debit/credit is denoted on the statement")
@@ -21,6 +21,9 @@ struct StatementLineItem {
 
     @Guide(description: "Last 4 digits of the card/account number this line is associated with, if visible anywhere on the statement (e.g. a header like \"Card ending 1234\"), or nil if none is shown")
     var lastFourDigits: String?
+
+    @Guide(description: "Only true if this is a real row from the statement's actual transaction table — a specific date, a specific single amount, and a description for one transaction that happened on that date. False for a fee schedule row, an interest rate/calculation row, a reward points summary row, terms and conditions text, or a promotional insert, even if it mentions rupee amounts.")
+    var isGenuineTransaction: Bool
 
     /// Same date + amount + description (trimmed, case-insensitive) — used
     /// only to collapse the near-boundary repeats two overlapping chunks
@@ -215,6 +218,47 @@ enum StatementReconciler {
             headers, running/opening/closing balance lines, page \
             footers, and marketing text.
 
+            Only extract rows from the actual transaction/statement table \
+            — each with a specific date, a specific single amount, and a \
+            transaction description naming a real merchant/payee. Do NOT \
+            extract: fee schedule tables, interest rate tables, reward \
+            points summaries, terms and conditions text, or promotional \
+            inserts, even if they contain rupee amounts.
+
+            Bank statements commonly include a worked EXAMPLE explaining \
+            how Interest or the Minimum Amount Due is calculated — look \
+            for section headers like "Illustration", "Scenario A" / \
+            "Scenario B", "the following illustration will indicate...", \
+            or a made-up walkthrough with generic line items ("EMI \
+            Principal", "EMI Interest", "Processing Fee", "Late Payment \
+            Fee", "Purchase on <date>" with no merchant named, "Total \
+            Amount Due", "Minimum Amount Due"). This is instructional \
+            boilerplate, not something that happened on this customer's \
+            account, even though it's laid out with dates and amounts \
+            exactly like a real transaction table and even though every \
+            number in it is really printed on the page. Do not extract \
+            any row from it, no matter how transaction-like it looks.
+
+            A genuine transaction row almost always names a specific \
+            merchant or payee (a store, an app, a person, a biller). A \
+            row whose only description is a generic label like "Purchase" \
+            or a fee/interest/EMI line item with no merchant name is a \
+            strong signal it belongs to one of the excluded sections \
+            above, not the customer's real transaction table.
+
+            Set isGenuineTransaction to false for any row drawn from one \
+            of the excluded sections above instead of the real transaction \
+            table — false entries are discarded, so when in doubt about \
+            whether a row is a genuine transaction, still include it but \
+            mark it accordingly rather than omitting it outright.
+
+            If this section contains no real transaction rows at all — for \
+            example it's entirely a fee schedule, an interest-calculation \
+            breakdown, a Minimum-Amount-Due illustration, or T&Cs/legal \
+            text — return an empty list. Never invent a transaction, and \
+            never repurpose an illustration's example figures as if they \
+            were this customer's real transactions, to fill the response.
+
             The text may contain OCR/extraction noise — misaligned columns, \
             odd line breaks, stray whitespace — use your best judgment to \
             recover each line's real date, amount, and description.
@@ -222,10 +266,96 @@ enum StatementReconciler {
 
         var allEntries: [StatementLineItem] = []
         for chunk in chunkedByLines(statementText, maxCharacters: maxChunkCharacters, overlapCharacters: chunkOverlapCharacters) {
+            // Skip the model call entirely for a chunk that's recognizably
+            // a MAD/interest-calculation illustration or T&Cs/legal page —
+            // see looksLikeNonTransactionSection's doc comment for why this
+            // has to happen before the model ever sees the chunk, not just
+            // via its own isGenuineTransaction judgment.
+            guard !looksLikeNonTransactionSection(chunk) else { continue }
+
             let chunkEntries = await extractLineItemsWithRetry(chunk: chunk, instructions: instructions)
-            appendDeduping(chunkEntries, to: &allEntries)
+            // Two more independent gates before a row counts as real:
+            //  1. The model's own "is this actually a transaction" gate —
+            //     keeps fee-schedule/interest-table/reward-summary/T&Cs/
+            //     illustration rows out even when a chunk mixes them with
+            //     real transactions (or wasn't caught by the whole-chunk
+            //     skip above).
+            //  2. amountAppearsInSource — a deterministic backstop for the
+            //     case the model's own judgment can't self-police: a chunk
+            //     of pure boilerplate (no transaction data at all) can
+            //     still make the model invent a plausible-looking row out
+            //     of thin air and confidently mark it genuine — this
+            //     catches that by requiring the row's amount to actually
+            //     be printed somewhere in the text it supposedly came from.
+            // Both discard before reconciliation, not just before display,
+            // so a false/invented row never counts toward matched/unmatched.
+            let genuineEntries = chunkEntries.filter {
+                $0.isGenuineTransaction && amountAppearsInSource($0, chunk: chunk)
+            }
+            appendDeduping(genuineEntries, to: &allEntries)
         }
         return allEntries
+    }
+
+    /// Cheap, keyword-based screen applied *before* a chunk ever reaches
+    /// the model — mirrors EmailTransactionParser.looksLikeTransactionAlert's
+    /// role for email. Calibrated against a real ICICI/Amazon Pay statement
+    /// during testing: its "how Minimum Amount Due is calculated" page is a
+    /// worked EXAMPLE laid out with dates, line items ("EMI Principal",
+    /// "Purchase on Oct 15, 2025"), and amounts that are genuinely printed
+    /// on the page — exactly like a real transaction table, just fictional.
+    /// Neither the instructions nor the model's own isGenuineTransaction
+    /// judgment reliably told the two apart (the on-device model kept
+    /// extracting the illustration's invented line items and marking them
+    /// genuine), and since the amounts really are on the page,
+    /// amountAppearsInSource can't catch it either — the only reliable
+    /// signal left is the section's own header/framing language, checked
+    /// here deterministically instead of left to the model to notice.
+    ///
+    /// Skipping the whole chunk (rather than trying to salvage a mixed
+    /// chunk) is deliberately the blunter option: chunkedByLines' 2,500-
+    /// character budget means a statement's actual transaction table and
+    /// its legal/illustration pages essentially never land in the same
+    /// chunk in practice, so the risk of losing a real row this way is low
+    /// next to the alternative of the illustration's invented rows showing
+    /// up as real spending.
+    private static func looksLikeNonTransactionSection(_ chunk: String) -> Bool {
+        let lowercased = chunk.lowercased()
+        let markers = [
+            "following illustration", "for illustration purposes",
+            "scenario a:", "scenario b:", "minimum amount due calculation",
+            "mad calculation", "interest calculation",
+            "grievances redressal", "important information on your credit card",
+            "terms and condition", "terms & condition", "great offers on your card",
+        ]
+        return markers.contains { lowercased.contains($0) }
+    }
+
+    /// Normalizes out thousands separators, then checks every plausible
+    /// printed form of `entry.amount` (two decimals, one decimal, and a
+    /// bare integer when the amount has none) against the chunk text.
+    /// Genuine rows the model actually read off the page pass this
+    /// trivially, since the number is right there; a row invented whole
+    /// cloth almost never happens to match a number already in the text.
+    ///
+    /// Matches are digit-boundary-aware (never a plain substring check) —
+    /// amount 50 must not count as "found" just because the text contains
+    /// 50000 or 150.00; the candidate has to appear as its own number.
+    private static func amountAppearsInSource(_ entry: StatementLineItem, chunk: String) -> Bool {
+        let normalizedChunk = chunk.replacingOccurrences(of: ",", with: "")
+        let rounded = (entry.amount * 100).rounded() / 100
+        var candidates: Set<String> = [
+            String(format: "%.2f", rounded),
+            String(format: "%.1f", rounded),
+        ]
+        if rounded == rounded.rounded() {
+            candidates.insert(String(format: "%.0f", rounded))
+        }
+        return candidates.contains { candidate in
+            let escaped = NSRegularExpression.escapedPattern(for: candidate)
+            let pattern = "(?<!\\d)\(escaped)(?!\\d)"
+            return normalizedChunk.range(of: pattern, options: .regularExpression) != nil
+        }
     }
 
     /// Splits `text` into whole-line chunks of at most `maxCharacters`,
@@ -321,12 +451,6 @@ enum StatementReconciler {
 
     // MARK: Reconciliation
 
-    private static let dateFormat: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
-
     /// ±1 day — a statement's printed date and the actual transaction date
     /// Panam recorded commonly drift by a day (posting date vs. the date
     /// you logged it, timezone rounding, etc.).
@@ -356,7 +480,12 @@ enum StatementReconciler {
     }
 
     private static func isMatched(_ entry: StatementLineItem, in transactions: [Transaction], accounts: [Account]) -> Bool {
-        guard let entryDate = dateFormat.date(from: entry.dateString) else { return false }
+        // ParsedTransaction.parseFlexibleDate, not a strict yyyy-MM-dd-only
+        // parse — the model asked for ISO but real-world testing showed it
+        // reliably echoing the statement's own dd/MM/yyyy dates instead
+        // (see that function's doc comment), and a line whose date can't be
+        // resolved at all can't be confidently matched either way.
+        guard let entryDate = ParsedTransaction.parseFlexibleDate(entry.dateString) else { return false }
         let resolvedAccount = resolveAccount(entry.lastFourDigits, accounts: accounts)
 
         return transactions.contains { transaction in
@@ -400,7 +529,8 @@ enum StatementReconciler {
             merchantName: entry.description,
             lastFourDigits: entry.lastFourDigits,
             resolvedDateString: entry.dateString,
-            paymentMethodName: nil
+            paymentMethodName: nil,
+            isGenuineTransaction: true
         )
         return StatementReconciliationCandidate(rawDescription: entry.description, parsed: parsed)
     }

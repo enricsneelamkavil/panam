@@ -426,6 +426,17 @@ private struct EmailCandidateRow: View {
                     Label("Matched refund for \(refundLabel(for: matched))", systemImage: "arrow.uturn.left")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.blue)
+                } else if parsed.resolvedType == .income {
+                    // matchRefund (EmailFetchCoordinator) already ran and
+                    // found no matching debit — but an unmatched credit
+                    // isn't automatically real income (the matching debit
+                    // could predate tracking, or never have been a card
+                    // debit at all), so this is flagged rather than shown
+                    // as a settled "Income" fact — easy to catch and
+                    // recategorize as a refund before import if it's wrong.
+                    Label("Income — no matching debit found, double-check", systemImage: "arrow.down.circle")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.orange)
                 }
             } else {
                 Text(candidate.rawSubject)
@@ -861,7 +872,12 @@ private struct StatementMailsSheet: View {
     }
 
     private func canQuickImport(_ candidate: StatementReconciliationCandidate) -> Bool {
-        candidate.parsed.amount > 0 && resolveAccount(candidate.parsed) != nil
+        // dateNeedsReview means every parse attempt failed on this line's
+        // date — resolvedDate is quietly today's date in that case (see its
+        // doc comment), not the statement's real one, so quick-import is
+        // blocked until the user opens Edit and sets the date themselves;
+        // otherwise a wrong date could get imported without ever being seen.
+        candidate.parsed.amount > 0 && resolveAccount(candidate.parsed) != nil && !candidate.parsed.dateNeedsReview
     }
 
     private func quickImport(_ candidate: StatementReconciliationCandidate) {
@@ -972,9 +988,15 @@ private struct StatementCandidateRow: View {
                 Text(candidate.parsed.amount, format: Self.inrFormat)
                     .font(.headline)
                 Spacer()
-                Text(candidate.parsed.resolvedDate, style: .date)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if candidate.parsed.dateNeedsReview {
+                    Label("Date unclear — please verify", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else {
+                    Text(candidate.parsed.resolvedDate, style: .date)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Text(candidate.rawDescription)
                 .font(.subheadline)

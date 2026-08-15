@@ -54,11 +54,85 @@ enum EmailTransactionParser {
 
             If the email is a debit/spend/payment alert, type is "expense". \
             If it's a credit/refund/salary alert, type is "income".
+
+            Set isGenuineTransaction to true only when the email reports \
+            one specific debit or credit that has already happened to a \
+            specific account. Set it to false for a promotional offer, a \
+            fee-structure/rate notice, a terms-and-conditions or policy \
+            update, a newsletter, or any other general notice — even one \
+            that mentions rupee amounts.
             """
 
         let session = LanguageModelSession(instructions: instructions)
         let response = try await session.respond(to: emailBody, generating: ParsedTransaction.self)
         return response.content
+    }
+}
+
+// MARK: - Pre-filter
+
+extension EmailTransactionParser {
+    /// Cheap keyword/structure screen applied *before* an email ever reaches
+    /// the model — a bank's own mail stream is full of promotional offers,
+    /// T&Cs/policy updates, and fee-schedule notices that share the model's
+    /// vocabulary ("credited", "your card", rupee amounts) closely enough
+    /// that leaving rejection entirely to isGenuineTransaction still let a
+    /// meaningful share through as bogus candidates. This doesn't have to be
+    /// exhaustive — anything that slips past still has to clear
+    /// isGenuineTransaction downstream — it only has to cut the obvious
+    /// non-candidates before they cost a model call.
+    ///
+    /// Requires: a transaction verb ("debited", "spent", …), a specific
+    /// currency amount, no more than a handful of distinct amounts (a real
+    /// alert cites the transaction amount plus maybe a running balance; a
+    /// fee-schedule table or a multi-tier promo lists many), and none of the
+    /// stock promotional/T&Cs/newsletter phrases.
+    static func looksLikeTransactionAlert(emailBody: String, subject: String) -> Bool {
+        let combined = (subject + " " + emailBody).lowercased()
+
+        let transactionVerbs = [
+            "debited", "credited", "spent", "withdrawn", "paid", "purchase of",
+            "payment of", "transferred", "transaction of", "charged",
+        ]
+        guard transactionVerbs.contains(where: combined.contains) else { return false }
+
+        let amounts = currencyAmounts(in: combined)
+        guard !amounts.isEmpty else { return false }
+        // A single alert names the transaction amount and, at most, a
+        // running/available balance alongside it — a fee schedule or a
+        // multi-tier offer lists many unrelated amounts instead.
+        guard Set(amounts).count <= 4 else { return false }
+
+        // Deliberately doesn't include generic footer boilerplate like
+        // "click here" or "know more" — a genuine debit/credit alert's own
+        // footer routinely links out to "view details" or "report this
+        // transaction" with that exact phrasing, so those false-positived
+        // on real transaction mail during testing against a live inbox.
+        // Only phrases that are close to exclusively promotional/T&Cs
+        // belong here.
+        let promotionalTells = [
+            "unsubscribe", "terms and conditions have been updated", "revised terms",
+            "fee schedule", "limited period offer",
+            "t&c apply", "tnc apply", "t&cs apply", "we've updated our", "we have updated our",
+            "policy update", "new rates effective", "newsletter", "special offer",
+            "offer valid", "cashback offer", "win rewards", "unlock rewards",
+        ]
+        guard !promotionalTells.contains(where: combined.contains) else { return false }
+
+        return true
+    }
+
+    /// Matches "Rs. 1,234.56", "INR 500", "₹99" — same amount shapes bank
+    /// alert emails actually use. Only used to count how many distinct
+    /// amounts an email cites, not to extract the transaction amount itself
+    /// (ParsedTransaction.amount is still the model's job).
+    private static func currencyAmounts(in text: String) -> [String] {
+        let pattern = #"(?:rs\.?|inr|₹)\s?[\d,]+(?:\.\d{1,2})?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.matches(in: text, range: range).compactMap {
+            Range($0.range, in: text).map { String(text[$0]) }
+        }
     }
 }
 

@@ -47,6 +47,22 @@ enum AppSettings {
         "alerts@notification.my.rbl.bank.in",
     ].joined(separator: "\n")
 
+    /// Whether the daily "log today's transactions" local notification
+    /// (NotificationManager.scheduleDailyReminder) is active. Off by
+    /// default — a daily nudge isn't for everyone, so this is opt-in from
+    /// Settings rather than something a fresh install starts doing on its
+    /// own.
+    static let dailyReminderEnabledKey = "dailyReminderEnabled"
+    static let dailyReminderEnabledDefault = false
+
+    /// Target hour/minute (24-hour) for the daily reminder — 10:00 PM by
+    /// default, matching the original ask, but editable from Settings via
+    /// a plain hour-and-minute picker rather than fixed in code.
+    static let dailyReminderHourKey = "dailyReminderHour"
+    static let dailyReminderHourDefault = 22
+    static let dailyReminderMinuteKey = "dailyReminderMinute"
+    static let dailyReminderMinuteDefault = 0
+
     /// Newline-joined list of Gmail senders/domains to search for statement
     /// emails (e.g. "e-Statement," "Monthly Statement"). Unlike
     /// gmailSenderTermsKey's per-transaction-alert senders, statement
