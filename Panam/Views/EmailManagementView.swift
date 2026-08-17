@@ -1340,11 +1340,6 @@ private struct DematStatementsSheet: View {
                         LabeledContent("Holdings Found") {
                             Text("\(coordinator.dematTotalHoldingsCount)")
                         }
-                        if coordinator.dematAutoUpdatedCount > 0 {
-                            LabeledContent("Auto-Updated") {
-                                Text("\(coordinator.dematAutoUpdatedCount)")
-                            }
-                        }
                         if !coordinator.dematReviewCandidates.isEmpty {
                             LabeledContent("Needs Review") {
                                 Text("\(coordinator.dematReviewCandidates.count)")
@@ -1368,7 +1363,7 @@ private struct DematStatementsSheet: View {
                         } header: {
                             Text("Review")
                         } footer: {
-                            Text("First-time matches aren't always right — confirm or re-pick which investment each holding belongs to. Once confirmed, that exact holding auto-updates from future statements without asking again.")
+                            Text("Confirm or re-pick which investment each holding belongs to, and double-check the current value — extraction from a PDF can misread a digit. Once you've matched a holding once, later statements for it show up here already matched, ready for a one-tap Confirm, but never update Panam's records without you confirming.")
                         }
                     }
                 }
@@ -1518,6 +1513,12 @@ private struct DematHoldingRow: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(candidate.holding.instrumentName)
                 .font(.headline)
+
+            if !candidate.nameVerified {
+                Label("Extraction couldn't verify this holding's name against the statement — check it manually before confirming.", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
 
             if let investedAmount {
                 LabeledContent("Invested") {

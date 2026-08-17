@@ -224,14 +224,17 @@ extension EmailTransactionParser {
         guard Set(amounts).count <= 4 else { return false }
 
         // Deliberately doesn't include generic footer boilerplate like
-        // "click here" or "know more" — a genuine debit/credit alert's own
-        // footer routinely links out to "view details" or "report this
-        // transaction" with that exact phrasing, so those false-positived
-        // on real transaction mail during testing against a live inbox.
-        // Only phrases that are close to exclusively promotional/T&Cs
-        // belong here.
+        // "click here," "know more," or "unsubscribe" — a genuine debit/
+        // credit alert's own footer routinely carries an opt-out/
+        // unsubscribe link as standard compliance boilerplate (confirmed
+        // against a real SBI Card PhonePe alert, which was being rejected
+        // here despite being a genuine transaction) alongside "view
+        // details"/"report this transaction" phrasing, so those
+        // false-positived on real transaction mail during testing against
+        // a live inbox. Only phrases that are close to exclusively
+        // promotional/T&Cs belong here.
         let promotionalTells = [
-            "unsubscribe", "terms and conditions have been updated", "revised terms",
+            "terms and conditions have been updated", "revised terms",
             "fee schedule", "limited period offer",
             "t&c apply", "tnc apply", "t&cs apply", "we've updated our", "we have updated our",
             "policy update", "new rates effective", "newsletter", "special offer",

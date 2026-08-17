@@ -83,11 +83,6 @@ final class EmailFetchCoordinator {
     /// near-identical one.
     private(set) var fetchedDematEmails: [FetchedStatementEmail] = []
     private(set) var dematTotalHoldingsCount = 0
-    /// Holdings whose extracted instrument name exactly matched an
-    /// Investment's already-remembered upstoxHoldingName — applied straight
-    /// through with no review, which is the whole point of remembering that
-    /// mapping in the first place. See processDematRow/confirmDematMatch.
-    private(set) var dematAutoUpdatedCount = 0
     private(set) var dematReviewCandidates: [DematHoldingReviewCandidate] = []
 
     /// The currently-running fetch, kept only so cancelFetch() can call
@@ -470,7 +465,6 @@ final class EmailFetchCoordinator {
         fetchErrorMessage = nil
         fetchedDematEmails = []
         dematTotalHoldingsCount = 0
-        dematAutoUpdatedCount = 0
         dematReviewCandidates = []
         processedCount = 0
         totalCount = 0
@@ -540,35 +534,52 @@ final class EmailFetchCoordinator {
     }
 
     /// Runs one fetched email's unlocked PDF through extract → match,
-    /// mirroring processRow(at:accounts:transactions:) above. A holding
-    /// whose exact instrument name is already remembered on some Investment
-    /// (upstoxHoldingName) updates that Investment directly, right here, no
-    /// review needed — everything else becomes a DematHoldingReviewCandidate
-    /// instead. Public for the same reason processRow is: DematStatementsSheet
-    /// calls this directly for the password-prompt-driven path, outside
-    /// runDematFetch's own loop.
+    /// mirroring processRow(at:accounts:transactions:) above. Every holding
+    /// becomes a DematHoldingReviewCandidate — even one whose exact
+    /// instrument name is already remembered on some Investment
+    /// (upstoxHoldingName) — so nothing writes to Investment.currentValue
+    /// without passing through the review screen first; a remembered match
+    /// just arrives pre-matched (DematHoldingRow already shows "Matches
+    /// <name>" with Confirm enabled) rather than needing to be re-picked.
+    /// This closes what used to be a silent, unreviewed write straight from
+    /// extraction — see DematHoldingExtractor.parseAmount's doc comment for
+    /// the bug that slipped through it. Public for the same reason processRow
+    /// is: DematStatementsSheet calls this directly for the
+    /// password-prompt-driven path, outside runDematFetch's own loop.
     func processDematRow(at index: Int, investments: [Investment]) async {
         guard fetchedDematEmails.indices.contains(index), let document = fetchedDematEmails[index].document else { return }
         fetchedDematEmails[index].status = .processing
         do {
             let text = try StatementReconciler.extractText(from: document)
-            let holdings = try await DematHoldingExtractor.extractHoldings(from: text)
-            dematTotalHoldingsCount += holdings.count
+            let results = try await DematHoldingExtractor.extractHoldings(from: text)
+            dematTotalHoldingsCount += results.count
 
-            for holding in holdings {
+            for result in results {
+                let holding = result.holding
                 let current = DematHoldingExtractor.parseAmount(holding.currentValueString)
-
-                if let remembered = investments.first(where: { $0.upstoxHoldingName == holding.instrumentName }) {
-                    remembered.currentValue = current
-                    remembered.lastValuationDate = .now
-                    dematAutoUpdatedCount += 1
-                } else {
-                    let suggested = DematHoldingExtractor.matchInvestment(for: holding, in: investments)
-                    dematReviewCandidates.append(DematHoldingReviewCandidate(
-                        holding: holding, currentValue: current,
-                        suggestedInvestment: suggested
-                    ))
-                }
+                // A name-verification failure (result.nameVerified == false)
+                // means the model's instrumentName doesn't turn up anywhere
+                // in the source — it may be entirely invented, so don't run
+                // it through matchInvestment at all: a mangled name loosely
+                // matching some unrelated real Investment by substring would
+                // silently misattribute this value to it. Leave
+                // suggestedInvestment nil and let the flagged row (see
+                // DematHoldingReviewCandidate.nameVerified) force a manual
+                // pick instead.
+                //
+                // Always through review otherwise, even for a remembered
+                // exact-name match — matchInvestment checks
+                // upstoxHoldingName first, so a remembered holding still
+                // shows up here pre-matched ("Matches <name>", Confirm
+                // already enabled), just without the silent direct write
+                // that used to bypass review entirely and let a bad
+                // extraction (see DematHoldingExtractor.parseAmount's doc
+                // comment) land on Investment.currentValue unseen.
+                let suggested = result.nameVerified ? DematHoldingExtractor.matchInvestment(for: holding, in: investments) : nil
+                dematReviewCandidates.append(DematHoldingReviewCandidate(
+                    holding: holding, currentValue: current,
+                    suggestedInvestment: suggested, nameVerified: result.nameVerified
+                ))
             }
             fetchedDematEmails[index].status = .done
         } catch {
