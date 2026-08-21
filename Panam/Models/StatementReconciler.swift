@@ -259,23 +259,46 @@ enum StatementReconciler {
             Bank statements commonly include a worked EXAMPLE explaining \
             how Interest or the Minimum Amount Due is calculated — look \
             for section headers like "Illustration", "Scenario A" / \
-            "Scenario B", "the following illustration will indicate...", \
-            or a made-up walkthrough with generic line items ("EMI \
-            Principal", "EMI Interest", "Processing Fee", "Late Payment \
-            Fee", "Purchase on <date>" with no merchant named, "Total \
-            Amount Due", "Minimum Amount Due"). This is instructional \
-            boilerplate, not something that happened on this customer's \
-            account, even though it's laid out with dates and amounts \
-            exactly like a real transaction table and even though every \
-            number in it is really printed on the page. Do not extract \
-            any row from it, no matter how transaction-like it looks.
+            "Scenario B", "Sample Transaction", "the following \
+            illustration will indicate...", or a made-up walkthrough with \
+            generic line items ("EMI Principal", "EMI Interest", \
+            "Processing Fee", "Late Payment Fee", "Purchase on <date>" \
+            with no merchant named, "Total Amount Due", "Minimum Amount \
+            Due"). This is instructional boilerplate, not something that \
+            happened on this customer's account, even though it's laid \
+            out with dates and amounts exactly like a real transaction \
+            table and even though every number in it is really printed \
+            on the page. Do not extract any row from it, no matter how \
+            transaction-like it looks.
+
+            Some sections are pure customer-safety/support boilerplate \
+            with no transaction data in them at all — for example a \
+            "Quick Tips" card-safety notice ("never share your card \
+            number, CVV, expiry date, PIN, or OTP with anyone"), a GST- \
+            applicability disclaimer ("GST Applicability on all fees & \
+            charges, currently set at 18%"), a dispute/grievance- \
+            redressal process description, or a "pay your dues on time" \
+            credit-score advisory. These never contain a real \
+            transaction, even when the surrounding statement has genuine \
+            transactions elsewhere in the document. If a section is this \
+            kind of boilerplate, return an empty list for it — do not \
+            invent dated line items with round numbers or generic \
+            merchant names ("Purchase at XYZ Mall", "Online shopping", \
+            "Grocery shopping") to fill the response just because the \
+            section asked for a list of transactions.
 
             A genuine transaction row almost always names a specific \
             merchant or payee (a store, an app, a person, a biller). A \
             row whose only description is a generic label like "Purchase" \
             or a fee/interest/EMI line item with no merchant name is a \
             strong signal it belongs to one of the excluded sections \
-            above, not the customer's real transaction table.
+            above, not the customer's real transaction table. This \
+            includes a statement's own running account-summary sidebar — \
+            labels like "New Debits", "Fees & Charges", "Payments & \
+            Credits", or "Monthly EMI Debits" are that sidebar's own \
+            running subtotals, not one-time charges, even when they end \
+            up on the same line as a real transaction date because of \
+            how the page's columns were laid out.
 
             Set isGenuineTransaction to false for any row drawn from one \
             of the excluded sections above instead of the real transaction \
@@ -303,7 +326,8 @@ enum StatementReconciler {
         let statementText = truncateAtFooter(statementText)
 
         var allEntries: [StatementLineItem] = []
-        for chunk in chunkedByLines(statementText, maxCharacters: maxChunkCharacters, overlapCharacters: chunkOverlapCharacters) {
+        let chunks = chunkedByLines(statementText, maxCharacters: maxChunkCharacters, overlapCharacters: chunkOverlapCharacters)
+        for chunk in chunks {
             // Skip the model call entirely for a chunk that's recognizably
             // a MAD/interest-calculation illustration or T&Cs/legal page —
             // see looksLikeNonTransactionSection's doc comment for why this
@@ -312,7 +336,8 @@ enum StatementReconciler {
             guard !looksLikeNonTransactionSection(chunk) else { continue }
 
             let chunkEntries = await extractLineItemsWithRetry(chunk: chunk, instructions: instructions)
-            // Two more independent gates before a row counts as real:
+
+            // Three independent gates before a row counts as real:
             //  1. The model's own "is this actually a transaction" gate —
             //     keeps fee-schedule/interest-table/reward-summary/T&Cs/
             //     illustration rows out even when a chunk mixes them with
@@ -325,10 +350,16 @@ enum StatementReconciler {
             //     of thin air and confidently mark it genuine — this
             //     catches that by requiring the row's amount to actually
             //     be printed somewhere in the text it supposedly came from.
-            // Both discard before reconciliation, not just before display,
-            // so a false/invented row never counts toward matched/unmatched.
+            //  3. looksLikeSummaryLabel — a second deterministic backstop
+            //     for a row the model got the amount right on (so gate 2
+            //     doesn't catch it) but that's actually a statement's own
+            //     running-total sidebar line flattened onto a transaction
+            //     date by the page's column layout, not a real charge.
+            // All three discard before reconciliation, not just before
+            // display, so a false/invented/mislabeled row never counts
+            // toward matched/unmatched.
             let genuineEntries = chunkEntries.filter {
-                $0.isGenuineTransaction && amountAppearsInSource($0, chunk: chunk)
+                $0.isGenuineTransaction && amountAppearsInSource($0, chunk: chunk) && !looksLikeSummaryLabel($0)
             }
             appendDeduping(genuineEntries, to: &allEntries)
         }
@@ -407,7 +438,19 @@ enum StatementReconciler {
             "following illustration", "for illustration purposes",
             "scenario a:", "scenario b:", "minimum amount due calculation",
             "mad calculation", "interest calculation",
-            "grievances redressal", "important information on your credit card",
+            // "Sample Transaction" — RBL Bank's own header for the same
+            // worked-illustration shape ICICI calls "Scenario A"/"the
+            // following illustration": real-world testing against an
+            // actual RBL Bank credit card statement showed its "Sample
+            // Transaction" table (fictional dates/amounts/merchants
+            // exactly like ICICI's) sailing through both this whole-chunk
+            // skip and the model's own isGenuineTransaction judgment,
+            // since neither this list nor the model's training recognized
+            // that specific header wording. Every issuer seems to phrase
+            // this section's header differently, so this list will likely
+            // keep growing bank by bank rather than converging.
+            "sample transaction",
+            "important information on your credit card",
             "terms and condition", "terms & condition", "great offers on your card",
             // Generic statement closing/disclaimer boilerplate — same
             // phrases truncateAtFooter looks for, kept here too as a
@@ -423,7 +466,17 @@ enum StatementReconciler {
             "does not require a signature", "please do not reply to this",
             "registered office", "corporate office",
         ]
-        return markers.contains { lowercased.contains($0) }
+        // Matched as a shared stem, not a fixed phrase — real statements
+        // spell this "Grievance Redressal Officer," "Grievances
+        // Redressal," "Grievance Redressal Cell," etc., and an exact-
+        // phrase marker silently misses whichever variant it wasn't
+        // written for (an actual RBL Bank statement's "Grievance
+        // Redressal" — singular — didn't match a "Grievances Redressal"
+        // marker here before this, letting the model's own
+        // isGenuineTransaction judgment invent transactions from that
+        // section's surrounding boilerplate instead). "grievance" alone
+        // closes the whole class of near-miss in one place.
+        return lowercased.contains("grievance") || markers.contains { lowercased.contains($0) }
     }
 
     /// Normalizes out thousands separators, then checks every plausible
@@ -451,6 +504,59 @@ enum StatementReconciler {
             let pattern = "(?<!\\d)\(escaped)(?!\\d)"
             return normalizedChunk.range(of: pattern, options: .regularExpression) != nil
         }
+    }
+
+    /// A statement's own running account-summary sidebar — Total/Minimum
+    /// Amount Due, New Debits, Fees & Charges, Payments & Credits, Monthly
+    /// EMI Debits, credit-limit figures, and the like — sits right next to
+    /// the real transaction table on a two-column statement layout, and
+    /// PDFKit's text extraction flattens both columns into the same line
+    /// order rather than preserving them as separate columns. A sidebar
+    /// subtotal can land on the exact same line as a real transaction's
+    /// date this way and get pulled in as if it were that day's own
+    /// entry — real-world testing against an actual RBL Bank credit card
+    /// statement showed exactly this: "New Debits" and "Fees & Charges"
+    /// sidebar totals, both genuinely printed with a plausible amount and
+    /// no merchant name, extracted as dated transactions and marked
+    /// isGenuineTransaction=true.
+    ///
+    /// This is a shape check — does the description read as a running-
+    /// total's own label rather than a merchant/payee name — not a bank-
+    /// specific keyword list, so it's meant to generalize to any issuer
+    /// whose statement has a similar summary sidebar, not just RBL.
+    /// Independent of, and applied in addition to, isGenuineTransaction:
+    /// a row rejected here is discarded regardless of what the model's
+    /// own judgment said, the same way amountAppearsInSource overrides it
+    /// deterministically above.
+    ///
+    /// Deliberately leaves out anything that's also routinely a genuine,
+    /// individually-dated fee (e.g. plain "Goods & Service Tax" or "Late
+    /// Payment Fee" tied to one specific charge, as opposed to the
+    /// sidebar's own aggregate "Fees & Charges" line) — only labels that
+    /// are always a running total, never a one-time charge, are listed.
+    private static let summaryLabelMarkers = [
+        "new debits", "fees & charges", "fees and charges",
+        "payments & credits", "payments and credits",
+        "monthly emi debits", "transferred to emi",
+        "total amount due", "minimum amount due", "min. amt. due", "min amt due",
+        "last bill amount", "opening balance", "closing balance",
+        "available credit limit", "total credit limit", "available cash limit",
+        "statement date", "statement period", "payment due date",
+    ]
+
+    private static func looksLikeSummaryLabel(_ entry: StatementLineItem) -> Bool {
+        let trimmed = entry.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A leading ledger +/- sign (as in "+ New Debits 1,515.00") is
+        // itself a strong signal this is a summary sidebar's own running
+        // total, never a merchant description — checked even though the
+        // model has so far always stripped this sign out of its returned
+        // description, as cheap defense against a future/different
+        // statement where it doesn't.
+        if trimmed.hasPrefix("+") || trimmed.hasPrefix("-") {
+            return true
+        }
+        let lowercased = trimmed.lowercased()
+        return summaryLabelMarkers.contains { lowercased.hasPrefix($0) }
     }
 
     /// Splits `text` into whole-line chunks of at most `maxCharacters`,

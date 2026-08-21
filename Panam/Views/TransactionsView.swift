@@ -16,6 +16,16 @@ struct TransactionsView: View {
     @State private var searchText = ""
     @AppStorage("hideAutoRecurringTransactions") private var hideRecurring = false
 
+    /// Optional category filter, e.g. pushed here from a Dashboard "Recent
+    /// Spends" row. Starts as whatever the caller passed in, but lives in
+    /// @State so the "Filtered by … ✕" indicator can clear it back to the
+    /// full, unfiltered list without needing a new view instance.
+    @State private var categoryFilter: Category?
+
+    init(category: Category? = nil) {
+        _categoryFilter = State(initialValue: category)
+    }
+
     /// Transactions created by daily recurring payments or daily investment
     /// contributions — the noise the "Hide Recurring" toggle filters out.
     /// Subscriptions and all non-daily cadences always show.
@@ -37,9 +47,15 @@ struct TransactionsView: View {
     }
 
     private var visibleTransactions: [Transaction] {
-        guard hideRecurring else { return transactions }
-        let hidden = autoRecurringIDs
-        return transactions.filter { !hidden.contains($0.persistentModelID) }
+        var result = transactions
+        if hideRecurring {
+            let hidden = autoRecurringIDs
+            result = result.filter { !hidden.contains($0.persistentModelID) }
+        }
+        if let categoryFilter {
+            result = result.filter { $0.category?.persistentModelID == categoryFilter.persistentModelID }
+        }
+        return result
     }
 
     /// Transactions grouped by calendar day, newest day first.
@@ -58,6 +74,9 @@ struct TransactionsView: View {
         let hidden = hideRecurring ? autoRecurringIDs : []
         return allMoneyEvents.filter { event in
             if let sourceID = event.sourceTransaction?.persistentModelID, hidden.contains(sourceID) {
+                return false
+            }
+            if let categoryFilter, event.category?.persistentModelID != categoryFilter.persistentModelID {
                 return false
             }
             return event.note.lowercased().contains(q) ||
@@ -100,15 +119,24 @@ struct TransactionsView: View {
                     }
                 }
             }
+            .safeAreaInset(edge: .top) {
+                if let categoryFilter {
+                    CategoryFilterBanner(categoryName: categoryFilter.name) {
+                        self.categoryFilter = nil
+                    }
+                }
+            }
             .overlay {
                 if searchText.isEmpty && visibleTransactions.isEmpty {
                     ContentUnavailableView(
                         "No Transactions",
                         systemImage: "list.bullet",
                         description: Text(
-                            transactions.isEmpty
-                                ? "Tap + to record your first transaction."
-                                : "All transactions here are hidden by the recurring filter."
+                            categoryFilter != nil
+                                ? "No transactions in \(categoryFilter!.name)."
+                                : transactions.isEmpty
+                                    ? "Tap + to record your first transaction."
+                                    : "All transactions here are hidden by the recurring filter."
                         )
                     )
                 } else if !searchText.isEmpty && searchResults.isEmpty {
@@ -178,6 +206,33 @@ struct TransactionsView: View {
             }
             safelyDelete(transaction: transaction, context: modelContext)
         }
+    }
+}
+
+// MARK: - Category filter indicator
+
+/// Pinned above the list whenever TransactionsView was pushed with an
+/// initial `category:` filter (e.g. from Dashboard's "Recent Spends" card)
+/// — makes the filter visible and gives an obvious, one-tap way back to
+/// the full, unfiltered list.
+private struct CategoryFilterBanner: View {
+    let categoryName: String
+    let onClear: () -> Void
+
+    var body: some View {
+        HStack {
+            Label("Filtered by \(categoryName)", systemImage: "line.3.horizontal.decrease.circle.fill")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.white)
+            Spacer()
+            Button(action: onClear) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.white)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color.appPrimary)
     }
 }
 

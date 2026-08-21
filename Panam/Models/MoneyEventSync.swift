@@ -92,6 +92,7 @@ enum MoneyEventSync {
             note: occ.parent?.name ?? ""
         )
         event.account = occ.parent?.account
+        event.sourceTransaction = occ.linkedTransaction
         return event
     }
 

@@ -451,11 +451,12 @@ struct DashboardView: View {
                 id: $0.category.name,
                 name: $0.category.name,
                 total: $0.total,
-                color: color(for: $0.category)
+                color: color(for: $0.category),
+                category: $0.category
             )
         }
         if uncategorizedTotal > 0 {
-            entries.append(SpendEntry(id: "uncategorized", name: "Uncategorized", total: uncategorizedTotal, color: .gray))
+            entries.append(SpendEntry(id: "uncategorized", name: "Uncategorized", total: uncategorizedTotal, color: .gray, category: nil))
         }
         return entries.sorted { $0.total > $1.total }
     }
@@ -505,12 +506,24 @@ struct DashboardView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(spendEntries.prefix(5)) { entry in
-                    CategoryTotalRow(
+                    let row = CategoryTotalRow(
                         name: entry.name,
                         total: entry.total,
                         share: entry.total / (spendEntries.first?.total ?? 1),
                         color: entry.color
                     )
+                    // "Uncategorized" is a synthetic bucket with no real
+                    // Category to filter by, so it stays a plain row.
+                    if let category = entry.category {
+                        NavigationLink {
+                            TransactionsView(category: category)
+                        } label: {
+                            row
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        row
+                    }
                 }
             }
 
@@ -700,6 +713,10 @@ private struct SpendEntry: Identifiable {
     let name: String
     let total: Double
     let color: Color
+    /// The real Category backing this entry — nil for the synthetic
+    /// "Uncategorized" bucket, which has no Category to filter
+    /// TransactionsView by.
+    let category: Category?
 }
 
 /// Full category breakdown (including "Uncategorized", when present),
