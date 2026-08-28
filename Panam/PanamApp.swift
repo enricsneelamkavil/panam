@@ -46,6 +46,7 @@ struct PanamApp: App {
     @State private var privacyState = PrivacyState()
     @State private var gmailAuth = GmailAuthManager()
     @State private var emailFetchCoordinator = EmailFetchCoordinator()
+    @State private var tabNavigation = TabNavigationState()
     @State private var backgroundedAt: Date?
 
     @AppStorage(AppSettings.biometricLockEnabledKey)
@@ -158,6 +159,7 @@ struct PanamApp: App {
             .environment(gmailAuth)
             .environment(authState)
             .environment(emailFetchCoordinator)
+            .environment(tabNavigation)
             .onOpenURL { url in
                 GIDSignIn.sharedInstance.handle(url)
             }

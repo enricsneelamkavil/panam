@@ -506,11 +506,17 @@ struct DashboardView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(spendEntries.prefix(5)) { entry in
+                    // showsDot: false — Recent Spends' own bar above already
+                    // shows color per-segment; repeating it as a dot next to
+                    // every row read as redundant, so these rows go back to
+                    // plain text/amount (the share capsule still tints, and
+                    // CategoryBreakdownView's "See All" rows keep their dot).
                     let row = CategoryTotalRow(
                         name: entry.name,
                         total: entry.total,
                         share: entry.total / (spendEntries.first?.total ?? 1),
-                        color: entry.color
+                        color: entry.color,
+                        showsDot: false
                     )
                     // "Uncategorized" is a synthetic bucket with no real
                     // Category to filter by, so it stays a plain row.
@@ -839,13 +845,20 @@ private struct CategoryTotalRow: View {
     let total: Double
     let share: Double
     let color: Color
+    /// True everywhere except Recent Spends' own list (see that call
+    /// site) — the dot repeats color that's already shown elsewhere
+    /// (Recent Spends' bar above, or here, the share capsule below), so
+    /// callers that don't need it can drop back to a plain text/amount row.
+    var showsDot: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Circle()
-                    .fill(color)
-                    .frame(width: 8, height: 8)
+                if showsDot {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 8, height: 8)
+                }
                 Text(name)
                 Spacer()
                 MaskableCurrencyText(amount: total)

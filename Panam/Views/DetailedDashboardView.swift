@@ -10,6 +10,10 @@ import Charts
 /// The "Detailed" dashboard: trend charts over a selectable time range.
 /// Embedded inside DashboardView's NavigationStack.
 struct DetailedDashboardView: View {
+    // Lets the calendar heat-map switch to the Flow tab directly instead of
+    // pushing a filtered TransactionsView onto this tab's own
+    // NavigationStack — see TabNavigationState's doc comment.
+    @Environment(TabNavigationState.self) private var tabNavigation
     @Query(sort: \Transaction.date) private var transactions: [Transaction]
     @Query private var accounts: [Account]
     @Query private var recurringOccurrences: [RecurringOccurrence]
@@ -17,6 +21,12 @@ struct DetailedDashboardView: View {
     @Query private var emiInstallments: [EMIInstallment]
 
     @State private var range: TimeRange = .month
+    /// Months back from the current month the calendar heat-map is
+    /// showing — 0 is the current month, 1 is one month back, etc. An
+    /// offset rather than a stored Date so "jump back to the current
+    /// month" and "don't let > go into the future" are both a plain
+    /// integer comparison against 0.
+    @State private var heatMapMonthOffset = 0
 
     private var calendar: Calendar { Calendar.current }
 
@@ -48,6 +58,8 @@ struct DetailedDashboardView: View {
                     )
                     .padding(.top, 40)
                 } else {
+                    spentThisMonthChart
+                    calendarHeatMap
                     netWorthChart
                     incomeExpenseChart
                     categoryTrendChart
@@ -59,6 +71,529 @@ struct DetailedDashboardView: View {
             }
             .padding()
         }
+    }
+
+    // MARK: - Shared day-of-month spend helper
+
+    /// Per-day expense total (day-of-month → amount) within `interval` —
+    /// shared by both the cumulative comparison chart and the calendar
+    /// heat-map below, so "what counts as a day's spend" only has one
+    /// definition in this file. Same expense/refund netting convention as
+    /// monthlyBurn (a .refund nets against the day it lands on, not the
+    /// day of the original purchase) and effectiveAmount rather than
+    /// amount (categoryTrendChart's own reasoning: a split transaction
+    /// should only count the user's own share).
+    private func dailySpendByDayOfMonth(in interval: DateInterval) -> [Int: Double] {
+        var totals: [Int: Double] = [:]
+        for transaction in transactions where interval.contains(transaction.date) && !transaction.isExcludedFromFlow {
+            let day = calendar.component(.day, from: transaction.date)
+            if transaction.type == .refund {
+                totals[day, default: 0] -= transaction.effectiveAmount
+            } else if transaction.type.isExpenseLike {
+                totals[day, default: 0] += transaction.effectiveAmount
+            }
+        }
+        return totals
+    }
+
+    // MARK: - Spent This Month (cumulative comparison)
+
+    private struct CumulativeSpendPoint: Identifiable {
+        let day: Int
+        let cumulativeAmount: Double
+        let series: String
+        var id: String { "\(series)|\(day)" }
+    }
+
+    private var previousMonthInterval: DateInterval {
+        let previousMonthDate = calendar.date(byAdding: .month, value: -1, to: currentMonthInterval.start) ?? currentMonthInterval.start
+        return calendar.dateInterval(of: .month, for: previousMonthDate) ?? DateInterval(start: previousMonthDate, duration: 0)
+    }
+
+    /// Running total day by day for the current month, stopping at today —
+    /// there's no cumulative figure yet for a day that hasn't happened.
+    private var thisMonthCumulativePoints: [CumulativeSpendPoint] {
+        let daily = dailySpendByDayOfMonth(in: currentMonthInterval)
+        let today = calendar.component(.day, from: .now)
+        var running = 0.0
+        return (1...today).map { day in
+            running += daily[day] ?? 0
+            return CumulativeSpendPoint(day: day, cumulativeAmount: running, series: "This Month")
+        }
+    }
+
+    /// Same running total, but for every day of the previous full calendar
+    /// month — plotted against day-of-month rather than actual date, so it
+    /// lines up with This Month's curve as a same-point-in-the-cycle
+    /// comparison instead of a same-calendar-date one.
+    private var lastMonthCumulativePoints: [CumulativeSpendPoint] {
+        let interval = previousMonthInterval
+        let daily = dailySpendByDayOfMonth(in: interval)
+        let daysInMonth = calendar.range(of: .day, in: .month, for: interval.start)?.count ?? 30
+        var running = 0.0
+        return (1...daysInMonth).map { day in
+            running += daily[day] ?? 0
+            return CumulativeSpendPoint(day: day, cumulativeAmount: running, series: "Last Month")
+        }
+    }
+
+    /// Day currently under the drag/tap on the chart — nil means "not
+    /// touching the chart right now," which hides the rule line, the
+    /// highlighted point, and the callout together.
+    @State private var selectedSpendDay: Int?
+
+    /// Which of the two series the touch actually resolved to — set
+    /// alongside `selectedSpendDay` by `updateSelection(at:proxy:geometry:)`,
+    /// which compares the touch's y-position against each series' y-value
+    /// at that day rather than just picking an x and showing both. Nil
+    /// only when neither series has data at the selected day (shouldn't
+    /// normally happen, since a day is only ever selected from a touch
+    /// inside the plot area).
+    @State private var selectedSpendSeries: SpendSeriesSelection?
+
+    private enum SpendSeriesSelection {
+        case thisMonth
+        case lastMonth
+    }
+
+    /// Measured size of the floating callout bubble, captured via
+    /// `.onGeometryChange` where it's rendered below — needed to center it
+    /// horizontally on the touch point and to sit its bottom edge just
+    /// above the line, since `.position(x:y:)` places a view's *center*
+    /// and the bubble's size varies with which series is highlighted.
+    @State private var calloutSize: CGSize = .zero
+
+    private var selectedThisMonthPoint: CumulativeSpendPoint? {
+        guard let selectedSpendDay else { return nil }
+        return thisMonthCumulativePoints.first { $0.day == selectedSpendDay }
+    }
+
+    private var selectedLastMonthPoint: CumulativeSpendPoint? {
+        guard let selectedSpendDay else { return nil }
+        return lastMonthCumulativePoints.first { $0.day == selectedSpendDay }
+    }
+
+    /// The single point actually highlighted — whichever series
+    /// `updateSelection` resolved the touch to, not both at once.
+    private var activeSelectedPoint: CumulativeSpendPoint? {
+        switch selectedSpendSeries {
+        case .thisMonth: selectedThisMonthPoint
+        case .lastMonth: selectedLastMonthPoint
+        case nil: nil
+        }
+    }
+
+    /// Matches each series' own line color — appPrimary (blue) for This
+    /// Month, secondary (gray) for Last Month — so the highlight dot and
+    /// callout are unambiguous about which line they belong to.
+    private var activeSelectedColor: Color {
+        selectedSpendSeries == .lastMonth ? Color.secondary : Color.appPrimary
+    }
+
+    private var spentThisMonthChart: some View {
+        GroupBox("Spent This Month") {
+            VStack(alignment: .leading, spacing: 12) {
+                MaskableCurrencyText(amount: thisMonthCumulativePoints.last?.cumulativeAmount ?? 0)
+                    .font(.system(size: 32, weight: .bold))
+                    .foregroundStyle(.appPrimary)
+
+                Chart {
+                    ForEach(thisMonthCumulativePoints) { point in
+                        AreaMark(
+                            x: .value("Day", point.day),
+                            y: .value("Spent", point.cumulativeAmount),
+                            series: .value("Series", point.series)
+                        )
+                        .foregroundStyle(Color.appPrimary.opacity(0.15))
+
+                        LineMark(
+                            x: .value("Day", point.day),
+                            y: .value("Spent", point.cumulativeAmount),
+                            series: .value("Series", point.series)
+                        )
+                        .foregroundStyle(Color.appPrimary)
+                    }
+                    ForEach(lastMonthCumulativePoints) { point in
+                        LineMark(
+                            x: .value("Day", point.day),
+                            y: .value("Spent", point.cumulativeAmount),
+                            series: .value("Series", point.series)
+                        )
+                        .foregroundStyle(.secondary)
+                        .lineStyle(StrokeStyle(dash: [4, 4]))
+                    }
+
+                    if let selectedSpendDay {
+                        RuleMark(x: .value("Day", selectedSpendDay))
+                            .foregroundStyle(.secondary.opacity(0.4))
+                            .lineStyle(StrokeStyle(lineWidth: 1))
+                            // No .annotation(...) here — Charts reserves
+                            // layout space for a mark annotation and can
+                            // shrink the plot area to fit it, which is
+                            // exactly the "chart deforms while dragging"
+                            // bug: the callout's height changes underneath
+                            // the drag (one price row some days, two on
+                            // others) and the plot visibly squishes to
+                            // match. The callout is rendered as a floating
+                            // overlay in .chartOverlay below instead, so it
+                            // sits on top of the chart without ever
+                            // participating in its layout. The rule line
+                            // itself stays — it's still useful to show
+                            // *which day* is selected — but only one
+                            // series' point gets highlighted on it, not
+                            // both: see updateSelection(at:proxy:geometry:).
+
+                        if let activeSelectedPoint {
+                            // Background-colored halo behind the dot —
+                            // same "ring behind a solid marker" look Health/
+                            // Photos use for a selected point — so the
+                            // highlight pops off the line it sits on
+                            // instead of just being a slightly bigger dot
+                            // of the same color.
+                            PointMark(
+                                x: .value("Day", activeSelectedPoint.day),
+                                y: .value("Spent", activeSelectedPoint.cumulativeAmount)
+                            )
+                            .foregroundStyle(.background)
+                            .symbolSize(120)
+
+                            PointMark(
+                                x: .value("Day", activeSelectedPoint.day),
+                                y: .value("Spent", activeSelectedPoint.cumulativeAmount)
+                            )
+                            .foregroundStyle(activeSelectedColor)
+                            .symbolSize(50)
+                        }
+                    }
+                }
+                .frame(height: 200)
+                .chartOverlay { proxy in
+                    GeometryReader { geometry in
+                        ZStack(alignment: .topLeading) {
+                            Rectangle()
+                                .fill(.clear)
+                                .contentShape(Rectangle())
+                                .gesture(
+                                    // minimumDistance: 0 so a plain tap (no
+                                    // movement at all) still reports a location —
+                                    // the same recognizer covers both "tap" and
+                                    // "drag" from the task's own wording, rather
+                                    // than needing a separate TapGesture.
+                                    DragGesture(minimumDistance: 0)
+                                        .onChanged { value in
+                                            updateSelection(at: value.location, proxy: proxy, geometry: geometry)
+                                        }
+                                        .onEnded { _ in
+                                            selectedSpendDay = nil
+                                            selectedSpendSeries = nil
+                                        }
+                                )
+
+                            if let activeSelectedPoint,
+                               let anchor = calloutAnchor(for: activeSelectedPoint, proxy: proxy, geometry: geometry) {
+                                spendCallout(for: activeSelectedPoint, color: activeSelectedColor)
+                                    .fixedSize()
+                                    // Reports the bubble's real rendered
+                                    // size back into `calloutSize` — the
+                                    // `GeometryReader`-in-`.background` +
+                                    // `PreferenceKey` version of this tried
+                                    // first never actually worked: nested
+                                    // inside this deep a modifier chain the
+                                    // preference silently never reached the
+                                    // `.onPreferenceChange` up on the
+                                    // ZStack (confirmed via debug logging
+                                    // on-device — calloutSize stayed .zero
+                                    // for the entire session). onGeometryChange
+                                    // reports directly, no propagation to
+                                    // rely on.
+                                    .onGeometryChange(for: CGSize.self) { $0.size } action: { calloutSize = $0 }
+                                    // .position sets the view's *center*, so
+                                    // the bubble's bottom edge — not its
+                                    // center — is what needs to sit just
+                                    // above the anchor point; hence the
+                                    // half-height-plus-spacing offset. X is
+                                    // clamped so the bubble never hangs off
+                                    // either edge of the chart when the
+                                    // touched day is near day 1 or the end
+                                    // of the month.
+                                    .position(
+                                        x: clampedCalloutX(anchor.x, containerWidth: geometry.size.width),
+                                        y: anchor.y - calloutSize.height / 2 - 10
+                                    )
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                    }
+                }
+
+                HStack(spacing: 16) {
+                    legendItem(color: .appPrimary, label: "This Month")
+                    legendItem(color: .secondary, label: "Last Month")
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    /// Resolves a touch location (in the chart's own coordinate space) to
+    /// the nearest day-of-month — clamped to whichever series actually
+    /// reaches furthest right, since Last Month's dashed line commonly
+    /// extends past This Month's solid one (a full month vs. only the days
+    /// elapsed so far) — and to *which series* the touch is actually
+    /// closer to at that day, by comparing the touch's y-position against
+    /// each series' resolved y-position rather than always showing both.
+    /// When only one series has data at that day, that's an unambiguous
+    /// pick regardless of distance; when both do and the touch is
+    /// genuinely equidistant (rare — would need the two series to have the
+    /// exact same value that day), This Month wins as the deliberate,
+    /// deterministic default rather than an arbitrary one.
+    private func updateSelection(at location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy) {
+        let origin = geometry[proxy.plotAreaFrame].origin
+        let xPosition = location.x - origin.x
+        guard let day: Int = proxy.value(atX: xPosition) else { return }
+        let maxDay = max(thisMonthCumulativePoints.last?.day ?? 1, lastMonthCumulativePoints.last?.day ?? 1)
+        let clampedDay = min(max(day, 1), maxDay)
+        selectedSpendDay = clampedDay
+
+        let thisMonthPoint = thisMonthCumulativePoints.first { $0.day == clampedDay }
+        let lastMonthPoint = lastMonthCumulativePoints.first { $0.day == clampedDay }
+
+        switch (thisMonthPoint, lastMonthPoint) {
+        case (nil, nil):
+            selectedSpendSeries = nil
+        case (.some, nil):
+            selectedSpendSeries = .thisMonth
+        case (nil, .some):
+            selectedSpendSeries = .lastMonth
+        case let (.some(thisPoint), .some(lastPoint)):
+            let touchY = location.y - origin.y
+            guard let thisY = proxy.position(forY: thisPoint.cumulativeAmount),
+                  let lastY = proxy.position(forY: lastPoint.cumulativeAmount) else {
+                selectedSpendSeries = .thisMonth
+                return
+            }
+            let thisDistance = abs(touchY - thisY)
+            let lastDistance = abs(touchY - lastY)
+            selectedSpendSeries = lastDistance < thisDistance ? .lastMonth : .thisMonth
+        }
+    }
+
+    /// Where the callout should float, in the chartOverlay's own
+    /// coordinate space — the resolved position of `point`, the single
+    /// series `updateSelection` actually picked, not just an x position
+    /// pinned to the top of the chart. `proxy.position(forX:/forY:)`
+    /// returns plot-area-relative coordinates, so the plot area's own
+    /// origin has to be added back in to land in the overlay's coordinate
+    /// space.
+    private func calloutAnchor(for point: CumulativeSpendPoint, proxy: ChartProxy, geometry: GeometryProxy) -> CGPoint? {
+        let origin = geometry[proxy.plotAreaFrame].origin
+        guard let xPosition = proxy.position(forX: point.day),
+              let yPosition = proxy.position(forY: point.cumulativeAmount) else { return nil }
+        return CGPoint(x: origin.x + xPosition, y: origin.y + yPosition)
+    }
+
+    /// Keeps the callout's horizontal center far enough from the chart's
+    /// left/right edges that its own width never pushes it off-screen —
+    /// relevant near day 1 or the end of the month, where the anchor point
+    /// itself sits right at the plot area's edge.
+    private func clampedCalloutX(_ x: CGFloat, containerWidth: CGFloat) -> CGFloat {
+        let halfWidth = calloutSize.width / 2
+        guard halfWidth > 0, halfWidth * 2 < containerWidth else { return x }
+        return min(max(x, halfWidth), containerWidth - halfWidth)
+    }
+
+    /// Floating callout shown above the highlighted point — which series
+    /// it belongs to (dot + "This Month"/"Last Month", from `point.series`
+    /// so this can't drift out of sync with the Chart's own series
+    /// labels), the day, then that series' cumulative total. Per-series
+    /// now, not a combined "both series' values for this day" — matching
+    /// the single highlighted point, so the callout never claims a value
+    /// for a line the touch wasn't actually resolved to.
+    private func spendCallout(for point: CumulativeSpendPoint, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Circle().fill(color).frame(width: 6, height: 6)
+                Text(point.series)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            Text("Day \(point.day)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            MaskableCurrencyText(amount: point.cumulativeAmount)
+                .font(.caption2.weight(.semibold))
+        }
+        .padding(8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
+    }
+
+    /// Dot + label legend row — same visual shape as InvestmentsView's own
+    /// chart legend (a small filled Circle plus a caption label), reused
+    /// here for a plain two-item HStack rather than that view's adaptive
+    /// grid, since there are always exactly two series to label.
+    private func legendItem(color: Color, label: String) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Calendar heat-map
+
+    private var heatMapMonthStart: Date {
+        calendar.date(byAdding: .month, value: -heatMapMonthOffset, to: currentCalendarMonthStart) ?? currentCalendarMonthStart
+    }
+
+    private var heatMapMonthInterval: DateInterval {
+        calendar.dateInterval(of: .month, for: heatMapMonthStart) ?? DateInterval(start: heatMapMonthStart, duration: 0)
+    }
+
+    private var heatMapDailySpend: [Int: Double] {
+        dailySpendByDayOfMonth(in: heatMapMonthInterval)
+    }
+
+    private var heatMapDaysInMonth: Int {
+        calendar.range(of: .day, in: .month, for: heatMapMonthStart)?.count ?? 30
+    }
+
+    /// Calendar.Component.weekday is always 1 = Sunday … 7 = Saturday in
+    /// the Gregorian calendar regardless of the device's firstWeekday
+    /// setting (that only affects week-of-year/week-of-month math, not
+    /// this raw component) — exactly what a fixed Sun-first grid needs,
+    /// independent of locale.
+    private var heatMapLeadingEmptyCells: Int {
+        calendar.component(.weekday, from: heatMapMonthStart) - 1
+    }
+
+    /// Reference point for cell color-intensity: each day's spend relative
+    /// to the month's average *daily* spend, not relative to the busiest
+    /// day — dividing by the number of calendar days (not just days with
+    /// any spend) so a month with several quiet days still reads as
+    /// "quiet," not artificially brightened.
+    private var heatMapAverageDailySpend: Double {
+        guard heatMapDaysInMonth > 0 else { return 0 }
+        return heatMapDailySpend.values.reduce(0, +) / Double(heatMapDaysInMonth)
+    }
+
+    /// Near-transparent for a ₹0 day, scaling up toward fully saturated as
+    /// spend approaches (and passes) twice the month's daily average —
+    /// twice-average as the "fully saturated" ceiling rather than the
+    /// month's single highest day, so one outlier splurge doesn't wash out
+    /// every other day's relative color by comparison.
+    private func heatMapCellOpacity(for spend: Double) -> Double {
+        guard spend > 0 else { return 0.04 }
+        guard heatMapAverageDailySpend > 0 else { return 0.5 }
+        let ratio = spend / (heatMapAverageDailySpend * 2)
+        return min(0.15 + ratio * 0.85, 1.0)
+    }
+
+    private func heatMapDate(forDay day: Int) -> Date {
+        calendar.date(byAdding: .day, value: day - 1, to: heatMapMonthStart) ?? heatMapMonthStart
+    }
+
+    private var heatMapMonthLabel: String {
+        heatMapMonthStart.formatted(.dateTime.month(.wide).year())
+    }
+
+    private static let weekdayHeaders = ["S", "M", "T", "W", "T", "F", "S"]
+
+    /// One entry per grid cell — nil for a leading blank before the 1st,
+    /// the day number otherwise — combined into a single array specifically
+    /// so the grid below needs only one ForEach for its cells. Confirmed
+    /// against a real render that keeping the blanks and the real days as
+    /// two separate `ForEach(_, id: \.self)` loops sharing the same
+    /// LazyVGrid silently drops days whose Int id collides with one of the
+    /// blank placeholders' ids (0..<leadingCount vs 1...daysInMonth
+    /// overlap on every value up to leadingCount) — SwiftUI's lazy
+    /// containers de-duplicate by id across sibling ForEach, not just
+    /// within one, so days 1 through leadingCount silently vanished from
+    /// the rendered month. One array with one ForEach makes that
+    /// collision structurally impossible.
+    private var heatMapCells: [Int?] {
+        Array(repeating: nil, count: heatMapLeadingEmptyCells) + (1...heatMapDaysInMonth).map(Optional.init)
+    }
+
+    private var calendarHeatMap: some View {
+        GroupBox("Spending Calendar") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Button {
+                        heatMapMonthOffset += 1
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    Spacer()
+                    Text(heatMapMonthLabel)
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Button {
+                        heatMapMonthOffset -= 1
+                    } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .disabled(heatMapMonthOffset == 0)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.appPrimary)
+
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 4) {
+                    ForEach(Array(Self.weekdayHeaders.enumerated()), id: \.offset) { index, symbol in
+                        Text(symbol)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .id("header-\(index)")
+                    }
+
+                    ForEach(Array(heatMapCells.enumerated()), id: \.offset) { index, day in
+                        Group {
+                            if let day {
+                                // Switches tabs rather than pushing
+                                // TransactionsView onto this tab's own
+                                // NavigationStack — a filtered transaction
+                                // list belongs in the Flow tab, on Flow's
+                                // own stack, not layered on top of Analyze.
+                                // See TabNavigationState's doc comment for
+                                // why this needs shared state rather than a
+                                // plain NavigationLink.
+                                Button {
+                                    tabNavigation.pendingTransactionsDayFilter = heatMapDate(forDay: day)
+                                    tabNavigation.selectedTab = .flow
+                                } label: {
+                                    heatMapCell(day: day, spend: heatMapDailySpend[day] ?? 0)
+                                }
+                                .buttonStyle(.plain)
+                            } else {
+                                Color.clear.frame(height: 44)
+                            }
+                        }
+                        .id("cell-\(index)")
+                    }
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private func heatMapCell(day: Int, spend: Double) -> some View {
+        VStack(spacing: 2) {
+            Text("\(day)")
+                .font(.caption2.weight(.medium))
+            if spend > 0 {
+                MaskableCurrencyText(amount: spend)
+                    .font(.system(size: 9))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 44)
+        .background(Color.appPrimary.opacity(heatMapCellOpacity(for: spend)), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
     // MARK: - Net worth over time
@@ -672,6 +1207,7 @@ private enum TimeRange: String, CaseIterable {
     NavigationStack {
         DetailedDashboardView()
     }
+    .environment(TabNavigationState())
     .modelContainer(
         for: [Account.self, Category.self, Transaction.self,
               RecurringPayment.self, RecurringOccurrence.self,

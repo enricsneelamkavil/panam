@@ -1,56 +1,83 @@
 import SwiftUI
 import UIKit
 
-/// Assigns every category a guaranteed-unique color for the app session —
-/// replaces the old per-name hash lookup (DashboardView.color(for:)
-/// pre-this-file), which picked an index via `hash(name) % paletteCount`
-/// and could put two different categories on the exact same color once
-/// there were more categories than base colors (routine: CategorySeeder
-/// alone seeds 21 presets against a 12-color palette).
+/// Assigns every category a persistent color, stored on the category
+/// itself (`Category.colorIndex`) instead of rebuilt fresh every session —
+/// replaces the old in-memory `[UUID: Color]` dictionary, which was
+/// reshuffled from `DashboardView.barPalette.shuffled()` on every app
+/// launch, so a category's color changed every time you reopened the app.
 ///
-/// Built once per session (not persisted — a fresh shuffle every launch,
-/// same as the old lookup's "assigned once per session" framing) from
-/// DashboardView.barPalette, shuffled, and grown with saturation/brightness
-/// variants of those same base hues if there are more categories than base
-/// colors. Growth only ever appends — an existing category's assigned
-/// index/color never changes just because a new category needed the
-/// palette extended, so colors stay stable as you add categories mid-session.
+/// Two pieces of persisted state work together:
+///  - `Category.colorIndex` — assigned once, the first time a category's
+///    color is ever resolved (covers both a brand-new category and any
+///    pre-existing category from before this field existed, which starts
+///    at the model's -1 sentinel until then), and never reassigned again —
+///    see Category.colorIndex's own doc comment.
+///  - `paletteOrder` (UserDefaults-backed) — a permutation of
+///    `DashboardView.barPalette`'s indices, shuffled once ever so
+///    colorIndex 0, 1, 2… still land on visually varied colors rather than
+///    the palette's own declared order, and cached for the process
+///    lifetime once loaded/generated. Without this, every user's category
+///    #0 would be the same blue, #1 the same green, etc.
 enum CategoryColorAssigner {
-    private static var assignments: [UUID: Color] = [:]
-    private static var palette: [Color] = []
-    private static var nextRound = 1
+    private static let paletteOrderKey = "categoryColorPaletteOrder"
+    private static var cachedPaletteOrder: [Int]?
 
+    /// Resolves `category`'s persistent color, assigning it a colorIndex
+    /// first if this is the first time it's ever been resolved.
+    /// `allCategories` only matters for that one-time assignment — it's
+    /// how "next unused index" is computed — so an already-assigned
+    /// category never actually needs it.
     static func color(for category: Category, among allCategories: [Category]) -> Color {
-        ensureAssigned(allCategories)
-        return assignments[category.backupID] ?? DashboardView.barPalette[0]
+        if category.colorIndex < 0 {
+            category.colorIndex = nextColorIndex(among: allCategories)
+        }
+        return paletteColor(at: category.colorIndex)
     }
 
-    private static func ensureAssigned(_ categories: [Category]) {
-        let unassigned = categories.filter { assignments[$0.backupID] == nil }
-        guard !unassigned.isEmpty else { return }
-
-        growPalette(toAtLeast: assignments.count + unassigned.count)
-
-        var nextIndex = assignments.count
-        for category in unassigned {
-            assignments[category.backupID] = palette[nextIndex % palette.count]
-            nextIndex += 1
-        }
+    /// One past the highest colorIndex already handed out. Never reuses a
+    /// gap left by a deleted category — always grows — so an index, once
+    /// assigned, uniquely identified that one category's color for as long
+    /// as any other category's colorIndex might have been computed relative
+    /// to it.
+    private static func nextColorIndex(among categories: [Category]) -> Int {
+        (categories.map(\.colorIndex).max() ?? -1) + 1
     }
 
-    /// Append-only: never reshuffles or replaces colors already handed out
-    /// at existing indices, only adds more at the end when needed.
-    private static func growPalette(toAtLeast minimumCount: Int) {
-        if palette.isEmpty {
-            palette = DashboardView.barPalette.shuffled()
+    /// Maps a colorIndex to an actual color: cycles through `paletteOrder`
+    /// for the first pass through the base palette, then a deterministic
+    /// lighter/darker variant of the same base hues for indices beyond
+    /// that (round 2 = first set of variants, round 3 = a second, further
+    /// set, etc.) — same growth scheme the old session-only version used,
+    /// just computed purely from `index` now instead of grown
+    /// incrementally into a cached array, so it needs nothing beyond the
+    /// index itself to always land on the same color.
+    private static func paletteColor(at index: Int) -> Color {
+        let order = paletteOrder()
+        guard !order.isEmpty else { return DashboardView.barPalette.first ?? .gray }
+        let position = index % order.count
+        let round = index / order.count
+        let base = DashboardView.barPalette[order[position]]
+        return round == 0 ? base : variant(of: base, round: round)
+    }
+
+    /// The base palette's indices in shuffled order — generated once
+    /// (whichever launch happens to be the first time any category's color
+    /// is resolved) and persisted from then on, so colorIndex → color
+    /// stays fixed forever after, the same way colorIndex itself does.
+    private static func paletteOrder() -> [Int] {
+        if let cachedPaletteOrder { return cachedPaletteOrder }
+        let baseCount = DashboardView.barPalette.count
+        let order: [Int]
+        if let stored = UserDefaults.standard.array(forKey: paletteOrderKey) as? [Int],
+           stored.count == baseCount, Set(stored) == Set(0..<baseCount) {
+            order = stored
+        } else {
+            order = Array(0..<baseCount).shuffled()
+            UserDefaults.standard.set(order, forKey: paletteOrderKey)
         }
-        while palette.count < minimumCount {
-            let variants = DashboardView.barPalette
-                .map { variant(of: $0, round: nextRound) }
-                .shuffled()
-            palette.append(contentsOf: variants)
-            nextRound += 1
-        }
+        cachedPaletteOrder = order
+        return order
     }
 
     /// A lighter or darker, slightly more saturated version of `color`,

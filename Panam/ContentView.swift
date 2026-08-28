@@ -9,7 +9,11 @@ import SwiftUI
 import SwiftData
 
 struct ContentView: View {
-    @State private var selectedTab: AppTab = .today
+    // Owned by PanamApp and injected app-wide (see TabNavigationState's own
+    // doc comment) rather than local @State, so a screen several tabs away
+    // — DetailedDashboardView's calendar heat-map — can switch the active
+    // tab itself, not just push more content onto its own tab's stack.
+    @Environment(TabNavigationState.self) private var tabNavigation
     @State private var showingAddTransaction = false
 
     enum AppTab {
@@ -17,7 +21,8 @@ struct ContentView: View {
     }
 
     var body: some View {
-        TabView(selection: $selectedTab) {
+        @Bindable var tabNavigation = tabNavigation
+        TabView(selection: $tabNavigation.selectedTab) {
             Tab("Today", systemImage: "house.fill", value: AppTab.today) {
                 DashboardView()
             }
@@ -39,12 +44,12 @@ struct ContentView: View {
                 Color.clear
             }
         }
-        .onChange(of: selectedTab) { oldValue, newValue in
+        .onChange(of: tabNavigation.selectedTab) { oldValue, newValue in
             if newValue == .add {
                 showingAddTransaction = true
                 // Reset immediately so the content never flashes and the
                 // previously active tab stays visually selected.
-                selectedTab = oldValue
+                tabNavigation.selectedTab = oldValue
             }
         }
         .sheet(isPresented: $showingAddTransaction) {
@@ -55,5 +60,6 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
+        .environment(TabNavigationState())
         .modelContainer(for: [Account.self, Category.self, Transaction.self], inMemory: true)
 }

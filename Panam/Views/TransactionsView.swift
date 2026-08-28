@@ -6,6 +6,14 @@ import SwiftData
 
 struct TransactionsView: View {
     @Environment(\.modelContext) private var modelContext
+    // TransactionsView is the Flow tab's own root — instantiated once by
+    // ContentView and kept alive across every tab switch, never re-created
+    // — so a day filter arriving from another tab (the Detailed Dashboard's
+    // calendar heat-map, several tabs away in the Analyze tab's own
+    // NavigationStack) can't be handed in through init the way categoryFilter
+    // is. TabNavigationState.pendingTransactionsDayFilter is the hand-off:
+    // see the .onChange below that consumes it into dayFilter.
+    @Environment(TabNavigationState.self) private var tabNavigation
     @Query(sort: \Transaction.date, order: .reverse) private var transactions: [Transaction]
     @Query private var occurrences: [RecurringOccurrence]
     @Query private var investmentOccurrences: [InvestmentOccurrence]
@@ -21,6 +29,14 @@ struct TransactionsView: View {
     /// @State so the "Filtered by … ✕" indicator can clear it back to the
     /// full, unfiltered list without needing a new view instance.
     @State private var categoryFilter: Category?
+
+    /// Single-day filter applied from the Detailed Dashboard's calendar
+    /// heat-map. Unlike categoryFilter this never arrives through init —
+    /// see tabNavigation's doc comment above — but lives in @State the
+    /// same way once set, so the "Filtered by … ✕" banner can clear it
+    /// back to the full, unfiltered list purely locally, without touching
+    /// tab selection at all.
+    @State private var dayFilter: Date?
 
     init(category: Category? = nil) {
         _categoryFilter = State(initialValue: category)
@@ -55,6 +71,9 @@ struct TransactionsView: View {
         if let categoryFilter {
             result = result.filter { $0.category?.persistentModelID == categoryFilter.persistentModelID }
         }
+        if let dayFilter {
+            result = result.filter { Calendar.current.isDate($0.date, inSameDayAs: dayFilter) }
+        }
         return result
     }
 
@@ -79,6 +98,9 @@ struct TransactionsView: View {
             if let categoryFilter, event.category?.persistentModelID != categoryFilter.persistentModelID {
                 return false
             }
+            if let dayFilter, !Calendar.current.isDate(event.date, inSameDayAs: dayFilter) {
+                return false
+            }
             return event.note.lowercased().contains(q) ||
             (event.merchant?.lowercased().contains(q) == true) ||
             (event.category?.name.lowercased().contains(q) == true) ||
@@ -88,6 +110,49 @@ struct TransactionsView: View {
             (event.paymentMethod?.rawValue.lowercased().contains(q) == true) ||
             (event.upiApp?.lowercased().contains(q) == true) ||
             String(event.amount).contains(q)
+        }
+    }
+
+    private var isFiltered: Bool {
+        categoryFilter != nil || dayFilter != nil
+    }
+
+    /// The Photos-app filter-icon pattern: an outline
+    /// `line.3.horizontal.decrease.circle` when the list is unfiltered
+    /// (present but inert — nothing to show or clear), switching to the
+    /// filled, tinted variant the moment a category or day filter is
+    /// active. No persistent banner taking up list space either way — the
+    /// active filter(s) only surface when this icon is tapped, as a menu
+    /// listing each one's description plus its own clear action, rather
+    /// than a single generic "Clear Filter" that would be ambiguous when
+    /// both a category and a day filter are active together.
+    @ViewBuilder
+    private var filterToolbarIcon: some View {
+        if isFiltered {
+            Menu {
+                if let categoryFilter {
+                    Text("Category: \(categoryFilter.name)")
+                    Button {
+                        self.categoryFilter = nil
+                    } label: {
+                        Label("Clear Category Filter", systemImage: "xmark.circle")
+                    }
+                }
+                if let dayFilter {
+                    Text("Date: \(dayFilter.formatted(date: .abbreviated, time: .omitted))")
+                    Button {
+                        self.dayFilter = nil
+                    } label: {
+                        Label("Clear Date Filter", systemImage: "xmark.circle")
+                    }
+                }
+            } label: {
+                Image(systemName: "line.3.horizontal.decrease.circle.fill")
+                    .foregroundStyle(Color.appPrimary)
+            }
+        } else {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -119,13 +184,6 @@ struct TransactionsView: View {
                     }
                 }
             }
-            .safeAreaInset(edge: .top) {
-                if let categoryFilter {
-                    CategoryFilterBanner(categoryName: categoryFilter.name) {
-                        self.categoryFilter = nil
-                    }
-                }
-            }
             .overlay {
                 if searchText.isEmpty && visibleTransactions.isEmpty {
                     ContentUnavailableView(
@@ -134,9 +192,11 @@ struct TransactionsView: View {
                         description: Text(
                             categoryFilter != nil
                                 ? "No transactions in \(categoryFilter!.name)."
-                                : transactions.isEmpty
-                                    ? "Tap + to record your first transaction."
-                                    : "All transactions here are hidden by the recurring filter."
+                                : dayFilter != nil
+                                    ? "No transactions on \(dayFilter!.formatted(date: .abbreviated, time: .omitted))."
+                                    : transactions.isEmpty
+                                        ? "Tap + to record your first transaction."
+                                        : "All transactions here are hidden by the recurring filter."
                         )
                     )
                 } else if !searchText.isEmpty && searchResults.isEmpty {
@@ -150,6 +210,9 @@ struct TransactionsView: View {
             .searchable(text: $searchText, prompt: "Search transactions, people, merchants...")
             .navigationTitle("Transactions")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    filterToolbarIcon
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink {
                         TransactionToolsMenuView()
@@ -176,6 +239,20 @@ struct TransactionsView: View {
             .sheet(item: $selectedEvent) { event in
                 MoneyEventDetailSheet(event: event)
                     .presentationDetents([.medium, .large])
+            }
+            // initial: true so this also runs the moment TransactionsView
+            // first appears already holding a pending filter — the tab
+            // switch and the pending-filter write both happen in the same
+            // button action (see DetailedDashboardView's calendar cell), so
+            // by the time this view is on screen the value may already be
+            // set rather than changing after the fact.
+            .onChange(of: tabNavigation.pendingTransactionsDayFilter, initial: true) { _, pendingDay in
+                guard let pendingDay else { return }
+                dayFilter = pendingDay
+                // Consumed — cleared right back to nil so simply switching
+                // to the Flow tab again later (with nothing newly tapped)
+                // doesn't silently re-apply this same filter.
+                tabNavigation.pendingTransactionsDayFilter = nil
             }
         }
     }
@@ -206,33 +283,6 @@ struct TransactionsView: View {
             }
             safelyDelete(transaction: transaction, context: modelContext)
         }
-    }
-}
-
-// MARK: - Category filter indicator
-
-/// Pinned above the list whenever TransactionsView was pushed with an
-/// initial `category:` filter (e.g. from Dashboard's "Recent Spends" card)
-/// — makes the filter visible and gives an obvious, one-tap way back to
-/// the full, unfiltered list.
-private struct CategoryFilterBanner: View {
-    let categoryName: String
-    let onClear: () -> Void
-
-    var body: some View {
-        HStack {
-            Label("Filtered by \(categoryName)", systemImage: "line.3.horizontal.decrease.circle.fill")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.white)
-            Spacer()
-            Button(action: onClear) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.white)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color.appPrimary)
     }
 }
 
@@ -579,5 +629,6 @@ struct TransactionRow: View {
 
 #Preview {
     TransactionsView()
+        .environment(TabNavigationState())
         .modelContainer(for: [Account.self, Category.self, Transaction.self], inMemory: true)
 }
