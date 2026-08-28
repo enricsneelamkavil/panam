@@ -39,6 +39,12 @@ struct DetailedDashboardView: View {
     }
 
     var body: some View {
+        // Computed once per body evaluation — see computeMetrics()'s doc
+        // comment for why this matters: every card below reads from this
+        // single pass instead of independently re-scanning `transactions`
+        // from its own computed property.
+        let metrics = computeMetrics()
+
         ScrollView {
             VStack(spacing: 16) {
                 Picker("Range", selection: $range) {
@@ -48,7 +54,7 @@ struct DetailedDashboardView: View {
                 }
                 .pickerStyle(.segmented)
 
-                keyMetricsCard
+                keyMetricsCard(metrics)
 
                 if transactions.isEmpty {
                     ContentUnavailableView(
@@ -58,19 +64,244 @@ struct DetailedDashboardView: View {
                     )
                     .padding(.top, 40)
                 } else {
-                    spentThisMonthChart
-                    calendarHeatMap
-                    netWorthChart
-                    incomeExpenseChart
-                    categoryTrendChart
+                    // Its own view, with its own drag-selection state — see
+                    // SpentThisMonthChartView's doc comment for why this
+                    // chart specifically was pulled out of this body rather
+                    // than staying an inline computed property like its
+                    // siblings below.
+                    SpentThisMonthChartView(
+                        thisMonthPoints: metrics.thisMonthCumulativePoints,
+                        lastMonthPoints: metrics.lastMonthCumulativePoints
+                    )
+                    calendarHeatMap(metrics)
+                    netWorthChart(metrics)
+                    incomeExpenseChart(metrics)
+                    categoryTrendChart(metrics)
                 }
 
                 if hasCompletedMonthOfHistory {
-                    yearlyProjectionCard
+                    yearlyProjectionCard(metrics)
                 }
             }
             .padding()
         }
+    }
+
+    // MARK: - Metrics cache
+
+    /// Every @Query-derived figure this dashboard's cards need. Built once
+    /// by `computeMetrics()` instead of exposed as independent computed
+    /// properties — see that function's doc comment for why.
+    private struct DashboardMetrics {
+        var liquidCash: Double = 0
+        var monthlyBurn: Double = 0
+        var savingsRate: Double?
+        var safeSpend: Double = 0
+        var riskLevel: RiskLevel = .unknown
+
+        var thisMonthCumulativePoints: [CumulativeSpendPoint] = []
+        var lastMonthCumulativePoints: [CumulativeSpendPoint] = []
+
+        var heatMapDailySpend: [Int: Double] = [:]
+        var heatMapAverageDailySpend: Double = 0
+
+        var netWorthPoints: [NetWorthPoint] = []
+        var incomeExpenseBuckets: [PeriodBucket] = []
+
+        var topCategoryNames: [String] = []
+        var categoryTrendPoints: [CategoryTrendPoint] = []
+        var categoryTotalsForDay: [(name: String, total: Double)] = []
+
+        var projectedYearlyTotal: Double = 0
+        var projectedYearlyDiscretionary: Double = 0
+    }
+
+    /// Computes every @Query-derived figure the dashboard's cards need,
+    /// sharing intermediate results across cards instead of letting each
+    /// card's own computed property re-derive them independently. Before
+    /// this existed: `recurringLinkedTransactionIDs` — itself an
+    /// O(recurring + investment + EMI occurrences) `Set` rebuild — was
+    /// reconstructed *inside* `isDiscretionaryExpense`'s per-transaction
+    /// filter closure, making `completedMonthsDiscretionarySpend` an
+    /// O(transactions × occurrences) computation; `topCategoryNames` was
+    /// computed twice independently (once each for `categoryTrendPoints`
+    /// and `categoryTotalsForDay`); and `dailySpendByDayOfMonth`/
+    /// `netWorthPoints` were re-derived from the full `transactions` array
+    /// on every independent property access within a single render.
+    ///
+    /// Called exactly once per `body` evaluation. That evaluation now only
+    /// happens when the range picker, the heat-map month, or the
+    /// underlying @Query data actually change — dragging on the "Spent
+    /// This Month" chart no longer triggers it at all, since that chart's
+    /// selection state lives on its own `SpentThisMonthChartView` instead
+    /// of on this view. That split is what makes "computed once per real
+    /// change" and "computed once per render" the same thing here, without
+    /// needing a separate cross-render cache with its own invalidation
+    /// logic to keep in sync with edits.
+    private func computeMetrics() -> DashboardMetrics {
+        var metrics = DashboardMetrics()
+
+        // Key metrics
+        metrics.liquidCash = accounts
+            .filter { $0.type == .bank || $0.type == .cash }
+            .reduce(0) { $0 + $1.balance }
+
+        let currentMonthTransactions = transactions.filter { currentMonthInterval.contains($0.date) }
+        let currentMonthSpent = currentMonthTransactions
+            .filter { $0.type.isExpenseLike && !$0.isExcludedFromFlow }
+            .reduce(0) { $0 + $1.amount }
+        let currentMonthRefunded = currentMonthTransactions
+            .filter { $0.type == .refund }
+            .reduce(0) { $0 + $1.amount }
+        metrics.monthlyBurn = currentMonthSpent - currentMonthRefunded
+
+        let monthlyIncome = transactions
+            .filter {
+                $0.type.isIncomeLike && $0.type != .refund && !$0.isLendingRepayment
+                    && currentMonthInterval.contains($0.date)
+            }
+            .reduce(0) { $0 + $1.amount }
+        metrics.savingsRate = monthlyIncome > 0 ? (monthlyIncome - metrics.monthlyBurn) / monthlyIncome : nil
+        metrics.safeSpend = metrics.liquidCash - unpaidCommitmentsThroughMonthEnd
+
+        var trailingTotal = 0.0
+        var trailingMonthsCounted = 0
+        if let currentMonthStart = calendar.dateInterval(of: .month, for: .now)?.start {
+            for offset in 1...3 {
+                guard let monthDate = calendar.date(byAdding: .month, value: -offset, to: currentMonthStart),
+                      let monthInterval = calendar.dateInterval(of: .month, for: monthDate)
+                else { continue }
+                let monthTransactions = transactions.filter { monthInterval.contains($0.date) }
+                let spent = monthTransactions
+                    .filter { $0.type.isExpenseLike && !$0.isExcludedFromFlow }
+                    .reduce(0) { $0 + $1.amount }
+                let refunded = monthTransactions.filter { $0.type == .refund }.reduce(0) { $0 + $1.amount }
+                trailingTotal += spent - refunded
+                trailingMonthsCounted += 1
+            }
+        }
+        let trailingThreeMonthAverageExpense: Double? =
+            trailingMonthsCounted > 0 ? trailingTotal / Double(trailingMonthsCounted) : nil
+
+        let daysElapsed = max(calendar.component(.day, from: .now), 1)
+        let daysInCurrentMonth = calendar.range(of: .day, in: .month, for: .now)?.count ?? daysElapsed
+        let projectedMonthSpend = metrics.monthlyBurn / Double(daysElapsed) * Double(daysInCurrentMonth)
+
+        if let average = trailingThreeMonthAverageExpense, average > 0 {
+            let ratio = projectedMonthSpend / average
+            switch ratio {
+            case ..<1.0: metrics.riskLevel = .onTrack
+            case 1.0..<1.25: metrics.riskLevel = .watch
+            default: metrics.riskLevel = .high
+            }
+        } else {
+            metrics.riskLevel = .unknown
+        }
+
+        // Spent This Month chart
+        let thisMonthDaily = dailySpendByDayOfMonth(in: currentMonthInterval)
+        let today = calendar.component(.day, from: .now)
+        var running = 0.0
+        metrics.thisMonthCumulativePoints = (1...today).map { day in
+            running += thisMonthDaily[day] ?? 0
+            return CumulativeSpendPoint(day: day, cumulativeAmount: running, series: "This Month")
+        }
+
+        let lastInterval = previousMonthInterval
+        let lastMonthDaily = dailySpendByDayOfMonth(in: lastInterval)
+        let daysInLastMonth = calendar.range(of: .day, in: .month, for: lastInterval.start)?.count ?? 30
+        running = 0.0
+        metrics.lastMonthCumulativePoints = (1...daysInLastMonth).map { day in
+            running += lastMonthDaily[day] ?? 0
+            return CumulativeSpendPoint(day: day, cumulativeAmount: running, series: "Last Month")
+        }
+
+        // Calendar heat-map
+        let heatMapDaily = dailySpendByDayOfMonth(in: heatMapMonthInterval)
+        metrics.heatMapDailySpend = heatMapDaily
+        metrics.heatMapAverageDailySpend = heatMapDaysInMonth > 0
+            ? heatMapDaily.values.reduce(0, +) / Double(heatMapDaysInMonth)
+            : 0
+
+        // Net worth
+        metrics.netWorthPoints = netWorthPoints()
+
+        // Income vs expense and category trend share the same range-scoped
+        // slice and bucket boundaries — computed once here rather than
+        // once per consumer.
+        let rangeTxns = rangeTransactions
+        let starts = bucketStarts
+
+        var bucketTotals: [Date: (income: Double, expense: Double)] = [:]
+        for transaction in rangeTxns {
+            // Transfers and adjustments have no net flow — excluded entirely.
+            guard !transaction.isExcludedFromFlow else { continue }
+            let key = bucketStart(for: transaction.date)
+            var entry = bucketTotals[key] ?? (0, 0)
+            if transaction.type == .refund {
+                entry.expense -= transaction.amount
+            } else if transaction.type.isIncomeLike {
+                entry.income += transaction.amount
+            } else {
+                entry.expense += transaction.amount
+            }
+            bucketTotals[key] = entry
+        }
+        metrics.incomeExpenseBuckets = starts.map { start in
+            let entry = bucketTotals[start] ?? (0, 0)
+            return PeriodBucket(start: start, income: entry.income, expense: entry.expense)
+        }
+
+        let expenseTxns = rangeTxns.filter { $0.type == .expense && $0.category != nil && !$0.isExcludedFromFlow }
+        let categoryGroups = Dictionary(grouping: expenseTxns) { $0.category!.name }
+        let topNames = categoryGroups
+            .map { (name: $0.key, total: $0.value.reduce(0) { $0 + $1.effectiveAmount }) }
+            .sorted { $0.total > $1.total }
+            .prefix(3)
+            .map(\.name)
+        metrics.topCategoryNames = topNames
+
+        if !topNames.isEmpty {
+            if range == .day {
+                var totals: [String: Double] = [:]
+                for transaction in rangeTxns where transaction.type == .expense && !transaction.isExcludedFromFlow {
+                    guard let name = transaction.category?.name, topNames.contains(name) else { continue }
+                    totals[name, default: 0] += transaction.effectiveAmount
+                }
+                metrics.categoryTotalsForDay = topNames.map { (name: $0, total: totals[$0] ?? 0) }
+            } else {
+                var totals: [String: [Date: Double]] = [:]
+                for transaction in rangeTxns where transaction.type == .expense && !transaction.isExcludedFromFlow {
+                    guard let name = transaction.category?.name, topNames.contains(name) else { continue }
+                    totals[name, default: [:]][bucketStart(for: transaction.date), default: 0] += transaction.effectiveAmount
+                }
+                // Zero-fill every bucket so each category draws a continuous line.
+                metrics.categoryTrendPoints = topNames.flatMap { name in
+                    starts.map { start in
+                        CategoryTrendPoint(categoryName: name, bucketStart: start, total: totals[name]?[start] ?? 0)
+                    }
+                }
+            }
+        }
+
+        // Yearly projection
+        if completedMonthsThisYear > 0 {
+            let interval = DateInterval(start: yearStart, end: currentCalendarMonthStart)
+            // Built once here, then just checked with `.contains` per
+            // transaction below — not rebuilt from scratch inside the
+            // filter closure (that O(transactions × occurrences) bug is
+            // exactly what made this the dashboard's worst per-render cost).
+            let linkedIDs = recurringLinkedTransactionIDs()
+            let completedMonthsDiscretionarySpend = transactions
+                .filter { isDiscretionaryExpense($0, linkedIDs: linkedIDs) && interval.contains($0.date) }
+                .reduce(0) { $0 + $1.amount }
+            let averageMonthlyDiscretionarySpend = completedMonthsDiscretionarySpend / Double(completedMonthsThisYear)
+            metrics.projectedYearlyDiscretionary =
+                completedMonthsDiscretionarySpend + averageMonthlyDiscretionarySpend * Double(remainingMonthsThisYear)
+            metrics.projectedYearlyTotal = metrics.projectedYearlyDiscretionary + recurringContributionsForYear
+        }
+
+        return metrics
     }
 
     // MARK: - Shared day-of-month spend helper
@@ -98,44 +329,625 @@ struct DetailedDashboardView: View {
 
     // MARK: - Spent This Month (cumulative comparison)
 
-    private struct CumulativeSpendPoint: Identifiable {
-        let day: Int
-        let cumulativeAmount: Double
-        let series: String
-        var id: String { "\(series)|\(day)" }
-    }
-
     private var previousMonthInterval: DateInterval {
         let previousMonthDate = calendar.date(byAdding: .month, value: -1, to: currentMonthInterval.start) ?? currentMonthInterval.start
         return calendar.dateInterval(of: .month, for: previousMonthDate) ?? DateInterval(start: previousMonthDate, duration: 0)
     }
 
-    /// Running total day by day for the current month, stopping at today —
-    /// there's no cumulative figure yet for a day that hasn't happened.
-    private var thisMonthCumulativePoints: [CumulativeSpendPoint] {
-        let daily = dailySpendByDayOfMonth(in: currentMonthInterval)
-        let today = calendar.component(.day, from: .now)
-        var running = 0.0
-        return (1...today).map { day in
-            running += daily[day] ?? 0
-            return CumulativeSpendPoint(day: day, cumulativeAmount: running, series: "This Month")
+    // MARK: - Calendar heat-map
+
+    private var heatMapMonthStart: Date {
+        calendar.date(byAdding: .month, value: -heatMapMonthOffset, to: currentCalendarMonthStart) ?? currentCalendarMonthStart
+    }
+
+    private var heatMapMonthInterval: DateInterval {
+        calendar.dateInterval(of: .month, for: heatMapMonthStart) ?? DateInterval(start: heatMapMonthStart, duration: 0)
+    }
+
+    private var heatMapDaysInMonth: Int {
+        calendar.range(of: .day, in: .month, for: heatMapMonthStart)?.count ?? 30
+    }
+
+    /// Calendar.Component.weekday is always 1 = Sunday … 7 = Saturday in
+    /// the Gregorian calendar regardless of the device's firstWeekday
+    /// setting (that only affects week-of-year/week-of-month math, not
+    /// this raw component) — exactly what a fixed Sun-first grid needs,
+    /// independent of locale.
+    private var heatMapLeadingEmptyCells: Int {
+        calendar.component(.weekday, from: heatMapMonthStart) - 1
+    }
+
+    /// Near-transparent for a ₹0 day, scaling up toward fully saturated as
+    /// spend approaches (and passes) twice the month's daily average —
+    /// twice-average as the "fully saturated" ceiling rather than the
+    /// month's single highest day, so one outlier splurge doesn't wash out
+    /// every other day's relative color by comparison. `average` is
+    /// `computeMetrics()`'s `heatMapAverageDailySpend`, computed once per
+    /// render rather than once per cell (30-ish redundant recomputations
+    /// otherwise, one per day in the grid).
+    private func heatMapCellOpacity(for spend: Double, average: Double) -> Double {
+        guard spend > 0 else { return 0.04 }
+        guard average > 0 else { return 0.5 }
+        let ratio = spend / (average * 2)
+        return min(0.15 + ratio * 0.85, 1.0)
+    }
+
+    private func heatMapDate(forDay day: Int) -> Date {
+        calendar.date(byAdding: .day, value: day - 1, to: heatMapMonthStart) ?? heatMapMonthStart
+    }
+
+    private var heatMapMonthLabel: String {
+        heatMapMonthStart.formatted(.dateTime.month(.wide).year())
+    }
+
+    private static let weekdayHeaders = ["S", "M", "T", "W", "T", "F", "S"]
+
+    /// One entry per grid cell — nil for a leading blank before the 1st,
+    /// the day number otherwise — combined into a single array specifically
+    /// so the grid below needs only one ForEach for its cells. Confirmed
+    /// against a real render that keeping the blanks and the real days as
+    /// two separate `ForEach(_, id: \.self)` loops sharing the same
+    /// LazyVGrid silently drops days whose Int id collides with one of the
+    /// blank placeholders' ids (0..<leadingCount vs 1...daysInMonth
+    /// overlap on every value up to leadingCount) — SwiftUI's lazy
+    /// containers de-duplicate by id across sibling ForEach, not just
+    /// within one, so days 1 through leadingCount silently vanished from
+    /// the rendered month. One array with one ForEach makes that
+    /// collision structurally impossible.
+    private var heatMapCells: [Int?] {
+        Array(repeating: nil, count: heatMapLeadingEmptyCells) + (1...heatMapDaysInMonth).map(Optional.init)
+    }
+
+    private func calendarHeatMap(_ metrics: DashboardMetrics) -> some View {
+        GroupBox("Spending Calendar") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Button {
+                        heatMapMonthOffset += 1
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    Spacer()
+                    Text(heatMapMonthLabel)
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Button {
+                        heatMapMonthOffset -= 1
+                    } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .disabled(heatMapMonthOffset == 0)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.appPrimary)
+
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 4) {
+                    ForEach(Array(Self.weekdayHeaders.enumerated()), id: \.offset) { index, symbol in
+                        Text(symbol)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .id("header-\(index)")
+                    }
+
+                    ForEach(Array(heatMapCells.enumerated()), id: \.offset) { index, day in
+                        Group {
+                            if let day {
+                                // Switches tabs rather than pushing
+                                // TransactionsView onto this tab's own
+                                // NavigationStack — a filtered transaction
+                                // list belongs in the Flow tab, on Flow's
+                                // own stack, not layered on top of Analyze.
+                                // See TabNavigationState's doc comment for
+                                // why this needs shared state rather than a
+                                // plain NavigationLink.
+                                Button {
+                                    tabNavigation.pendingTransactionsDayFilter = heatMapDate(forDay: day)
+                                    tabNavigation.selectedTab = .flow
+                                } label: {
+                                    heatMapCell(
+                                        day: day,
+                                        spend: metrics.heatMapDailySpend[day] ?? 0,
+                                        average: metrics.heatMapAverageDailySpend
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            } else {
+                                Color.clear.frame(height: 44)
+                            }
+                        }
+                        .id("cell-\(index)")
+                    }
+                }
+            }
+            .padding(.top, 4)
         }
     }
 
-    /// Same running total, but for every day of the previous full calendar
-    /// month — plotted against day-of-month rather than actual date, so it
-    /// lines up with This Month's curve as a same-point-in-the-cycle
-    /// comparison instead of a same-calendar-date one.
-    private var lastMonthCumulativePoints: [CumulativeSpendPoint] {
-        let interval = previousMonthInterval
-        let daily = dailySpendByDayOfMonth(in: interval)
-        let daysInMonth = calendar.range(of: .day, in: .month, for: interval.start)?.count ?? 30
-        var running = 0.0
-        return (1...daysInMonth).map { day in
-            running += daily[day] ?? 0
-            return CumulativeSpendPoint(day: day, cumulativeAmount: running, series: "Last Month")
+    private func heatMapCell(day: Int, spend: Double, average: Double) -> some View {
+        VStack(spacing: 2) {
+            Text("\(day)")
+                .font(.caption2.weight(.medium))
+            if spend > 0 {
+                MaskableCurrencyText(amount: spend)
+                    .font(.system(size: 9))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 44)
+        .background(Color.appPrimary.opacity(heatMapCellOpacity(for: spend, average: average)), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+
+    // MARK: - Net worth over time
+
+    private struct NetWorthPoint: Identifiable {
+        let date: Date
+        let bankCash: Double
+        let creditCard: Double
+        var id: Date { date }
+    }
+
+    /// Reconstructs past balances by starting from current balances and
+    /// reversing every transaction that happened after each sample date.
+    private func netWorthPoints() -> [NetWorthPoint] {
+        var sampleDates: [Date] = []
+        var date = rangeStart
+        while date < .now {
+            sampleDates.append(date)
+            guard let next = calendar.date(byAdding: range.sampleStep, to: date), next > date
+            else { break }
+            date = next
+        }
+        sampleDates.append(.now)
+
+        let currentBankCash = accounts
+            .filter { $0.type != .creditCard }
+            .reduce(0) { $0 + $1.balance }
+        let currentCreditCard = accounts
+            .filter { $0.type == .creditCard }
+            .reduce(0) { $0 + $1.balance }
+
+        return sampleDates.map { sampleDate in
+            var bankCash = currentBankCash
+            var creditCard = currentCreditCard
+            for transaction in transactions where transaction.date > sampleDate {
+                guard let account = transaction.account else { continue }
+                switch account.type {
+                case .bank, .cash, .wallet:
+                    bankCash -= transaction.type == .income ? transaction.amount : -transaction.amount
+                case .creditCard:
+                    creditCard -= transaction.type == .expense ? transaction.amount : -transaction.amount
+                }
+            }
+            return NetWorthPoint(date: sampleDate, bankCash: bankCash, creditCard: creditCard)
         }
     }
+
+    private func netWorthChart(_ metrics: DashboardMetrics) -> some View {
+        GroupBox("Net Worth") {
+            Chart(metrics.netWorthPoints) { point in
+                LineMark(
+                    x: .value("Date", point.date),
+                    y: .value("Amount", point.bankCash),
+                    series: .value("Series", "Net Worth")
+                )
+                .foregroundStyle(by: .value("Series", "Net Worth"))
+
+                LineMark(
+                    x: .value("Date", point.date),
+                    y: .value("Amount", point.creditCard),
+                    series: .value("Series", "Card Outstanding")
+                )
+                .foregroundStyle(by: .value("Series", "Card Outstanding"))
+                .lineStyle(StrokeStyle(dash: [4, 4]))
+            }
+            .chartForegroundStyleScale([
+                "Net Worth": Color.blue,
+                "Card Outstanding": Color.orange,
+            ])
+            .frame(height: 200)
+
+            Text("Card outstanding is shown for reference and is not part of net worth.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+        }
+    }
+
+    // MARK: - Income vs expense bars
+
+    private struct PeriodBucket: Identifiable {
+        let start: Date
+        var income: Double
+        var expense: Double
+        var id: Date { start }
+    }
+
+    /// All bucket start dates covering the range, so quiet periods still get bars.
+    private var bucketStarts: [Date] {
+        guard let first = calendar.dateInterval(of: range.bucketUnit, for: rangeStart)?.start
+        else { return [] }
+        var starts: [Date] = []
+        var date = first
+        while date <= .now {
+            starts.append(date)
+            guard let next = calendar.date(byAdding: range.bucketStep, to: date), next > date
+            else { break }
+            date = next
+        }
+        return starts
+    }
+
+    private func bucketStart(for date: Date) -> Date {
+        calendar.dateInterval(of: range.bucketUnit, for: date)?.start ?? date
+    }
+
+    private func incomeExpenseChart(_ metrics: DashboardMetrics) -> some View {
+        GroupBox("Income vs Expense") {
+            // Diverging bars: income grows up, expense hangs down from zero.
+            Chart(metrics.incomeExpenseBuckets) { bucket in
+                BarMark(
+                    x: .value("Period", bucket.start, unit: range.bucketUnit),
+                    y: .value("Income", bucket.income)
+                )
+                .foregroundStyle(.green)
+
+                BarMark(
+                    x: .value("Period", bucket.start, unit: range.bucketUnit),
+                    y: .value("Expense", -bucket.expense)
+                )
+                .foregroundStyle(.red)
+            }
+            .frame(height: 200)
+        }
+    }
+
+    // MARK: - Category trend
+
+    private struct CategoryTrendPoint: Identifiable {
+        let categoryName: String
+        let bucketStart: Date
+        let total: Double
+        var id: String { "\(categoryName)|\(bucketStart.timeIntervalSinceReferenceDate)" }
+    }
+
+    private func categoryTrendChart(_ metrics: DashboardMetrics) -> some View {
+        GroupBox("Top Category Trends") {
+            if range == .day {
+                if metrics.categoryTotalsForDay.isEmpty {
+                    Text("No categorized expenses in this range.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 8)
+                } else {
+                    Chart(metrics.categoryTotalsForDay, id: \.name) { entry in
+                        BarMark(
+                            x: .value("Category", entry.name),
+                            y: .value("Spent", entry.total)
+                        )
+                        .foregroundStyle(by: .value("Category", entry.name))
+                    }
+                    .frame(height: 180)
+                }
+            } else if metrics.categoryTrendPoints.isEmpty {
+                Text("No categorized expenses in this range.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+            } else {
+                Chart(metrics.categoryTrendPoints) { point in
+                    LineMark(
+                        x: .value("Period", point.bucketStart, unit: range.bucketUnit),
+                        y: .value("Spent", point.total),
+                        series: .value("Category", point.categoryName)
+                    )
+                    .foregroundStyle(by: .value("Category", point.categoryName))
+                }
+                .frame(height: 180)
+            }
+        }
+    }
+
+    // MARK: - Key Metrics
+
+    private var currentMonthInterval: DateInterval {
+        calendar.dateInterval(of: .month, for: .now) ?? DateInterval(start: .now, duration: 0)
+    }
+
+    /// Unpaid recurring bills, SIP contributions, and EMI installments due
+    /// before the end of the current month.
+    private var unpaidCommitmentsThroughMonthEnd: Double {
+        let monthEnd = currentMonthInterval.end
+        let bills = recurringOccurrences
+            .filter { !$0.isPaid && $0.dueDate < monthEnd }
+            .reduce(0) { $0 + $1.expectedAmount }
+        let sips = investmentOccurrences
+            .filter { !$0.isContributed && $0.dueDate < monthEnd }
+            .reduce(0) { $0 + $1.expectedAmount }
+        let emis = emiInstallments
+            .filter { !$0.isPaid && $0.dueDate < monthEnd }
+            .reduce(0) { $0 + $1.amount }
+        return bills + sips + emis
+    }
+
+    private enum RiskLevel: String {
+        case onTrack = "On Track"
+        case watch = "Watch"
+        case high = "High"
+        case unknown = "No Baseline"
+
+        var color: Color {
+            switch self {
+            case .onTrack: .green
+            case .watch: .orange
+            case .high: .red
+            case .unknown: .secondary
+            }
+        }
+    }
+
+    private func keyMetricsCard(_ metrics: DashboardMetrics) -> some View {
+        GroupBox("Key Metrics") {
+            VStack(spacing: 12) {
+                HStack(spacing: 12) {
+                    metricTile(title: "Liquid Cash", value: metrics.liquidCash, color: .primary)
+                    metricTile(title: "Monthly Burn", value: metrics.monthlyBurn, color: .red)
+                }
+                HStack(spacing: 12) {
+                    savingsRateTile(metrics.savingsRate)
+                    metricTile(
+                        title: "Safe Spend",
+                        value: metrics.safeSpend,
+                        color: metrics.safeSpend >= 0 ? .green : .red
+                    )
+                }
+                HStack {
+                    Text("Risk Level")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(metrics.riskLevel.rawValue)
+                        .font(.caption.bold())
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(metrics.riskLevel.color.opacity(0.15), in: Capsule())
+                        .foregroundStyle(metrics.riskLevel.color)
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private func metricTile(title: String, value: Double, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(color)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func savingsRateTile(_ rate: Double?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Savings Rate")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let rate {
+                Text(rate, format: .percent.precision(.fractionLength(0)))
+                    .font(.headline.monospacedDigit())
+                    .foregroundStyle(rate >= 0 ? .green : .red)
+            } else {
+                Text("—")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Yearly Projection
+
+    private var yearStart: Date {
+        calendar.dateInterval(of: .year, for: .now)?.start ?? .now
+    }
+
+    private var currentCalendarMonthStart: Date {
+        calendar.dateInterval(of: .month, for: .now)?.start ?? .now
+    }
+
+    /// Gate: is there at least one full completed calendar month of history
+    /// (anywhere in the transaction record, not necessarily this year)?
+    private var hasCompletedMonthOfHistory: Bool {
+        guard let earliestDate = transactions.map(\.date).min() else { return false }
+        let earliestMonthStart = calendar.dateInterval(of: .month, for: earliestDate)?.start ?? earliestDate
+        return earliestMonthStart < currentCalendarMonthStart
+    }
+
+    /// Fully completed calendar months so far this year (January up to,
+    /// but not including, the current month).
+    private var completedMonthsThisYear: Int {
+        max(calendar.dateComponents([.month], from: yearStart, to: currentCalendarMonthStart).month ?? 0, 0)
+    }
+
+    private var remainingMonthsThisYear: Int {
+        12 - completedMonthsThisYear
+    }
+
+    /// Transaction IDs generated by a recurring bill, SIP, or EMI payment —
+    /// everything else counts as discretionary spend. Returned rather than
+    /// exposed as a computed property so callers build it exactly once and
+    /// pass it in — see computeMetrics()'s doc comment for why that matters.
+    private func recurringLinkedTransactionIDs() -> Set<PersistentIdentifier> {
+        var ids = Set<PersistentIdentifier>()
+        for occurrence in recurringOccurrences {
+            if let linked = occurrence.linkedTransaction { ids.insert(linked.persistentModelID) }
+        }
+        for occurrence in investmentOccurrences {
+            if let linked = occurrence.linkedTransaction { ids.insert(linked.persistentModelID) }
+        }
+        for installment in emiInstallments {
+            if let linked = installment.linkedTransaction { ids.insert(linked.persistentModelID) }
+        }
+        return ids
+    }
+
+    private func isDiscretionaryExpense(_ transaction: Transaction, linkedIDs: Set<PersistentIdentifier>) -> Bool {
+        transaction.type == .expense && !linkedIDs.contains(transaction.persistentModelID)
+    }
+
+    /// Recurring commitments (bills, SIPs, EMIs) for the whole calendar year:
+    /// actual amount where already paid/contributed, expected amount otherwise.
+    private var recurringContributionsForYear: Double {
+        guard let yearInterval = calendar.dateInterval(of: .year, for: .now) else { return 0 }
+        let bills = recurringOccurrences
+            .filter { yearInterval.contains($0.dueDate) }
+            .reduce(0) { $0 + ($1.isPaid ? ($1.actualAmount ?? $1.expectedAmount) : $1.expectedAmount) }
+        let sips = investmentOccurrences
+            .filter { yearInterval.contains($0.dueDate) }
+            .reduce(0) { $0 + ($1.isContributed ? ($1.actualAmount ?? $1.expectedAmount) : $1.expectedAmount) }
+        let emis = emiInstallments
+            .filter { yearInterval.contains($0.dueDate) }
+            .reduce(0) { $0 + $1.amount }
+        return bills + sips + emis
+    }
+
+    private var yearLabel: String {
+        calendar.component(.year, from: .now).formatted(.number.grouping(.never))
+    }
+
+    private func yearlyProjectionCard(_ metrics: DashboardMetrics) -> some View {
+        GroupBox("Yearly Projection") {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(spacing: 4) {
+                    Text("Projected Total for \(yearLabel)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text(metrics.projectedYearlyTotal, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+                        .font(.title2.bold().monospacedDigit())
+                }
+                .frame(maxWidth: .infinity)
+
+                Divider()
+
+                HStack {
+                    Text("Discretionary")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(metrics.projectedYearlyDiscretionary,
+                         format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+                        .font(.subheadline.monospacedDigit())
+                }
+                HStack {
+                    Text("Recurring (bills, SIPs, EMIs)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(recurringContributionsForYear,
+                         format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
+                        .font(.subheadline.monospacedDigit())
+                }
+
+                Text("Based on \(completedMonthsThisYear) completed month\(completedMonthsThisYear == 1 ? "" : "s") of actual discretionary spend this year, averaged forward across the rest of \(yearLabel).")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 4)
+        }
+    }
+}
+
+private enum TimeRange: String, CaseIterable {
+    case day = "Day"
+    case week = "Week"
+    case month = "Month"
+    case quarter = "Quarter"
+    case year = "Year"
+
+    /// How far back the range reaches from now.
+    var startOffset: DateComponents {
+        switch self {
+        case .day: DateComponents(day: -1)
+        case .week: DateComponents(day: -7)
+        case .month: DateComponents(month: -1)
+        case .quarter: DateComponents(month: -3)
+        case .year: DateComponents(year: -1)
+        }
+    }
+
+    /// Step between net-worth reconstruction samples.
+    var sampleStep: DateComponents {
+        switch self {
+        case .day: DateComponents(hour: 1)
+        case .week: DateComponents(day: 1)
+        case .month: DateComponents(weekOfYear: 1)
+        case .quarter, .year: DateComponents(month: 1)
+        }
+    }
+
+    /// Bucket size for the bar and trend charts.
+    var bucketUnit: Calendar.Component {
+        switch self {
+        case .day: .hour
+        case .week: .day
+        case .month, .quarter: .weekOfYear
+        case .year: .month
+        }
+    }
+
+    var bucketStep: DateComponents {
+        switch self {
+        case .day: DateComponents(hour: 1)
+        case .week: DateComponents(day: 1)
+        case .month, .quarter: DateComponents(weekOfYear: 1)
+        case .year: DateComponents(month: 1)
+        }
+    }
+}
+
+/// One point on the "Spent This Month" cumulative-comparison chart — a
+/// running total for either the current or the previous calendar month,
+/// plotted by day-of-month. Shared between `DetailedDashboardView` (which
+/// computes both series once in `computeMetrics()`) and
+/// `SpentThisMonthChartView` (which renders them and owns the drag-to-
+/// inspect interaction), so it lives at file scope rather than nested in
+/// either.
+private struct CumulativeSpendPoint: Identifiable {
+    let day: Int
+    let cumulativeAmount: Double
+    let series: String
+    var id: String { "\(series)|\(day)" }
+}
+
+/// The "Spent This Month" card, as its own view rather than a computed
+/// property on `DetailedDashboardView`. It used to be one — along with the
+/// `selectedSpendDay`/`selectedSpendSeries`/`calloutSize` state that drives
+/// its drag-to-inspect interaction — and that was the root cause of the
+/// chart feeling laggy (and, with a large transaction history, freezing
+/// outright) while dragging: that state lived directly on
+/// `DetailedDashboardView`, whose `body` is one flat property building
+/// every dashboard card in sequence. Every `DragGesture.onChanged` during a
+/// touch therefore re-evaluated `keyMetricsCard`, `calendarHeatMap`,
+/// `netWorthChart`, `incomeExpenseChart`, `categoryTrendChart`, and
+/// `yearlyProjectionCard` too — none of which have anything to do with this
+/// chart — redoing several uncached O(transactions) and worse scans on
+/// every single frame of the drag.
+///
+/// Taking only the two already-computed point arrays as parameters (no
+/// `@Query`, no access to `DetailedDashboardView`'s environment or its
+/// other derived metrics) means a drag here can only ever invalidate this
+/// view's own body.
+private struct SpentThisMonthChartView: View {
+    let thisMonthPoints: [CumulativeSpendPoint]
+    let lastMonthPoints: [CumulativeSpendPoint]
 
     /// Day currently under the drag/tap on the chart — nil means "not
     /// touching the chart right now," which hides the rule line, the
@@ -165,12 +977,12 @@ struct DetailedDashboardView: View {
 
     private var selectedThisMonthPoint: CumulativeSpendPoint? {
         guard let selectedSpendDay else { return nil }
-        return thisMonthCumulativePoints.first { $0.day == selectedSpendDay }
+        return thisMonthPoints.first { $0.day == selectedSpendDay }
     }
 
     private var selectedLastMonthPoint: CumulativeSpendPoint? {
         guard let selectedSpendDay else { return nil }
-        return lastMonthCumulativePoints.first { $0.day == selectedSpendDay }
+        return lastMonthPoints.first { $0.day == selectedSpendDay }
     }
 
     /// The single point actually highlighted — whichever series
@@ -190,15 +1002,15 @@ struct DetailedDashboardView: View {
         selectedSpendSeries == .lastMonth ? Color.secondary : Color.appPrimary
     }
 
-    private var spentThisMonthChart: some View {
+    var body: some View {
         GroupBox("Spent This Month") {
             VStack(alignment: .leading, spacing: 12) {
-                MaskableCurrencyText(amount: thisMonthCumulativePoints.last?.cumulativeAmount ?? 0)
+                MaskableCurrencyText(amount: thisMonthPoints.last?.cumulativeAmount ?? 0)
                     .font(.system(size: 32, weight: .bold))
                     .foregroundStyle(.appPrimary)
 
                 Chart {
-                    ForEach(thisMonthCumulativePoints) { point in
+                    ForEach(thisMonthPoints) { point in
                         AreaMark(
                             x: .value("Day", point.day),
                             y: .value("Spent", point.cumulativeAmount),
@@ -213,7 +1025,7 @@ struct DetailedDashboardView: View {
                         )
                         .foregroundStyle(Color.appPrimary)
                     }
-                    ForEach(lastMonthCumulativePoints) { point in
+                    ForEach(lastMonthPoints) { point in
                         LineMark(
                             x: .value("Day", point.day),
                             y: .value("Spent", point.cumulativeAmount),
@@ -347,16 +1159,22 @@ struct DetailedDashboardView: View {
     /// genuinely equidistant (rare — would need the two series to have the
     /// exact same value that day), This Month wins as the deliberate,
     /// deterministic default rather than an arbitrary one.
+    ///
+    /// Reads `thisMonthPoints`/`lastMonthPoints` directly — they're `let`
+    /// parameters computed once by `DetailedDashboardView.computeMetrics()`
+    /// and passed in, not computed properties re-deriving from the full
+    /// transaction history on every access the way they used to.
     private func updateSelection(at location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy) {
-        let origin = geometry[proxy.plotAreaFrame].origin
+        guard let plotFrame = proxy.plotFrame else { return }
+        let origin = geometry[plotFrame].origin
         let xPosition = location.x - origin.x
         guard let day: Int = proxy.value(atX: xPosition) else { return }
-        let maxDay = max(thisMonthCumulativePoints.last?.day ?? 1, lastMonthCumulativePoints.last?.day ?? 1)
+        let maxDay = max(thisMonthPoints.last?.day ?? 1, lastMonthPoints.last?.day ?? 1)
         let clampedDay = min(max(day, 1), maxDay)
         selectedSpendDay = clampedDay
 
-        let thisMonthPoint = thisMonthCumulativePoints.first { $0.day == clampedDay }
-        let lastMonthPoint = lastMonthCumulativePoints.first { $0.day == clampedDay }
+        let thisMonthPoint = thisMonthPoints.first { $0.day == clampedDay }
+        let lastMonthPoint = lastMonthPoints.first { $0.day == clampedDay }
 
         switch (thisMonthPoint, lastMonthPoint) {
         case (nil, nil):
@@ -386,7 +1204,8 @@ struct DetailedDashboardView: View {
     /// origin has to be added back in to land in the overlay's coordinate
     /// space.
     private func calloutAnchor(for point: CumulativeSpendPoint, proxy: ChartProxy, geometry: GeometryProxy) -> CGPoint? {
-        let origin = geometry[proxy.plotAreaFrame].origin
+        guard let plotFrame = proxy.plotFrame else { return nil }
+        let origin = geometry[plotFrame].origin
         guard let xPosition = proxy.position(forX: point.day),
               let yPosition = proxy.position(forY: point.cumulativeAmount) else { return nil }
         return CGPoint(x: origin.x + xPosition, y: origin.y + yPosition)
@@ -440,765 +1259,6 @@ struct DetailedDashboardView: View {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-        }
-    }
-
-    // MARK: - Calendar heat-map
-
-    private var heatMapMonthStart: Date {
-        calendar.date(byAdding: .month, value: -heatMapMonthOffset, to: currentCalendarMonthStart) ?? currentCalendarMonthStart
-    }
-
-    private var heatMapMonthInterval: DateInterval {
-        calendar.dateInterval(of: .month, for: heatMapMonthStart) ?? DateInterval(start: heatMapMonthStart, duration: 0)
-    }
-
-    private var heatMapDailySpend: [Int: Double] {
-        dailySpendByDayOfMonth(in: heatMapMonthInterval)
-    }
-
-    private var heatMapDaysInMonth: Int {
-        calendar.range(of: .day, in: .month, for: heatMapMonthStart)?.count ?? 30
-    }
-
-    /// Calendar.Component.weekday is always 1 = Sunday … 7 = Saturday in
-    /// the Gregorian calendar regardless of the device's firstWeekday
-    /// setting (that only affects week-of-year/week-of-month math, not
-    /// this raw component) — exactly what a fixed Sun-first grid needs,
-    /// independent of locale.
-    private var heatMapLeadingEmptyCells: Int {
-        calendar.component(.weekday, from: heatMapMonthStart) - 1
-    }
-
-    /// Reference point for cell color-intensity: each day's spend relative
-    /// to the month's average *daily* spend, not relative to the busiest
-    /// day — dividing by the number of calendar days (not just days with
-    /// any spend) so a month with several quiet days still reads as
-    /// "quiet," not artificially brightened.
-    private var heatMapAverageDailySpend: Double {
-        guard heatMapDaysInMonth > 0 else { return 0 }
-        return heatMapDailySpend.values.reduce(0, +) / Double(heatMapDaysInMonth)
-    }
-
-    /// Near-transparent for a ₹0 day, scaling up toward fully saturated as
-    /// spend approaches (and passes) twice the month's daily average —
-    /// twice-average as the "fully saturated" ceiling rather than the
-    /// month's single highest day, so one outlier splurge doesn't wash out
-    /// every other day's relative color by comparison.
-    private func heatMapCellOpacity(for spend: Double) -> Double {
-        guard spend > 0 else { return 0.04 }
-        guard heatMapAverageDailySpend > 0 else { return 0.5 }
-        let ratio = spend / (heatMapAverageDailySpend * 2)
-        return min(0.15 + ratio * 0.85, 1.0)
-    }
-
-    private func heatMapDate(forDay day: Int) -> Date {
-        calendar.date(byAdding: .day, value: day - 1, to: heatMapMonthStart) ?? heatMapMonthStart
-    }
-
-    private var heatMapMonthLabel: String {
-        heatMapMonthStart.formatted(.dateTime.month(.wide).year())
-    }
-
-    private static let weekdayHeaders = ["S", "M", "T", "W", "T", "F", "S"]
-
-    /// One entry per grid cell — nil for a leading blank before the 1st,
-    /// the day number otherwise — combined into a single array specifically
-    /// so the grid below needs only one ForEach for its cells. Confirmed
-    /// against a real render that keeping the blanks and the real days as
-    /// two separate `ForEach(_, id: \.self)` loops sharing the same
-    /// LazyVGrid silently drops days whose Int id collides with one of the
-    /// blank placeholders' ids (0..<leadingCount vs 1...daysInMonth
-    /// overlap on every value up to leadingCount) — SwiftUI's lazy
-    /// containers de-duplicate by id across sibling ForEach, not just
-    /// within one, so days 1 through leadingCount silently vanished from
-    /// the rendered month. One array with one ForEach makes that
-    /// collision structurally impossible.
-    private var heatMapCells: [Int?] {
-        Array(repeating: nil, count: heatMapLeadingEmptyCells) + (1...heatMapDaysInMonth).map(Optional.init)
-    }
-
-    private var calendarHeatMap: some View {
-        GroupBox("Spending Calendar") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Button {
-                        heatMapMonthOffset += 1
-                    } label: {
-                        Image(systemName: "chevron.left")
-                    }
-                    Spacer()
-                    Text(heatMapMonthLabel)
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Button {
-                        heatMapMonthOffset -= 1
-                    } label: {
-                        Image(systemName: "chevron.right")
-                    }
-                    .disabled(heatMapMonthOffset == 0)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.appPrimary)
-
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 7), spacing: 4) {
-                    ForEach(Array(Self.weekdayHeaders.enumerated()), id: \.offset) { index, symbol in
-                        Text(symbol)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .id("header-\(index)")
-                    }
-
-                    ForEach(Array(heatMapCells.enumerated()), id: \.offset) { index, day in
-                        Group {
-                            if let day {
-                                // Switches tabs rather than pushing
-                                // TransactionsView onto this tab's own
-                                // NavigationStack — a filtered transaction
-                                // list belongs in the Flow tab, on Flow's
-                                // own stack, not layered on top of Analyze.
-                                // See TabNavigationState's doc comment for
-                                // why this needs shared state rather than a
-                                // plain NavigationLink.
-                                Button {
-                                    tabNavigation.pendingTransactionsDayFilter = heatMapDate(forDay: day)
-                                    tabNavigation.selectedTab = .flow
-                                } label: {
-                                    heatMapCell(day: day, spend: heatMapDailySpend[day] ?? 0)
-                                }
-                                .buttonStyle(.plain)
-                            } else {
-                                Color.clear.frame(height: 44)
-                            }
-                        }
-                        .id("cell-\(index)")
-                    }
-                }
-            }
-            .padding(.top, 4)
-        }
-    }
-
-    private func heatMapCell(day: Int, spend: Double) -> some View {
-        VStack(spacing: 2) {
-            Text("\(day)")
-                .font(.caption2.weight(.medium))
-            if spend > 0 {
-                MaskableCurrencyText(amount: spend)
-                    .font(.system(size: 9))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 44)
-        .background(Color.appPrimary.opacity(heatMapCellOpacity(for: spend)), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-    }
-
-    // MARK: - Net worth over time
-
-    private struct NetWorthPoint: Identifiable {
-        let date: Date
-        let bankCash: Double
-        let creditCard: Double
-        var id: Date { date }
-    }
-
-    /// Reconstructs past balances by starting from current balances and
-    /// reversing every transaction that happened after each sample date.
-    private var netWorthPoints: [NetWorthPoint] {
-        var sampleDates: [Date] = []
-        var date = rangeStart
-        while date < .now {
-            sampleDates.append(date)
-            guard let next = calendar.date(byAdding: range.sampleStep, to: date), next > date
-            else { break }
-            date = next
-        }
-        sampleDates.append(.now)
-
-        let currentBankCash = accounts
-            .filter { $0.type != .creditCard }
-            .reduce(0) { $0 + $1.balance }
-        let currentCreditCard = accounts
-            .filter { $0.type == .creditCard }
-            .reduce(0) { $0 + $1.balance }
-
-        return sampleDates.map { sampleDate in
-            var bankCash = currentBankCash
-            var creditCard = currentCreditCard
-            for transaction in transactions where transaction.date > sampleDate {
-                guard let account = transaction.account else { continue }
-                switch account.type {
-                case .bank, .cash, .wallet:
-                    bankCash -= transaction.type == .income ? transaction.amount : -transaction.amount
-                case .creditCard:
-                    creditCard -= transaction.type == .expense ? transaction.amount : -transaction.amount
-                }
-            }
-            return NetWorthPoint(date: sampleDate, bankCash: bankCash, creditCard: creditCard)
-        }
-    }
-
-    private var netWorthChart: some View {
-        GroupBox("Net Worth") {
-            Chart(netWorthPoints) { point in
-                LineMark(
-                    x: .value("Date", point.date),
-                    y: .value("Amount", point.bankCash),
-                    series: .value("Series", "Net Worth")
-                )
-                .foregroundStyle(by: .value("Series", "Net Worth"))
-
-                LineMark(
-                    x: .value("Date", point.date),
-                    y: .value("Amount", point.creditCard),
-                    series: .value("Series", "Card Outstanding")
-                )
-                .foregroundStyle(by: .value("Series", "Card Outstanding"))
-                .lineStyle(StrokeStyle(dash: [4, 4]))
-            }
-            .chartForegroundStyleScale([
-                "Net Worth": Color.blue,
-                "Card Outstanding": Color.orange,
-            ])
-            .frame(height: 200)
-
-            Text("Card outstanding is shown for reference and is not part of net worth.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 4)
-        }
-    }
-
-    // MARK: - Income vs expense bars
-
-    private struct PeriodBucket: Identifiable {
-        let start: Date
-        var income: Double
-        var expense: Double
-        var id: Date { start }
-    }
-
-    /// All bucket start dates covering the range, so quiet periods still get bars.
-    private var bucketStarts: [Date] {
-        guard let first = calendar.dateInterval(of: range.bucketUnit, for: rangeStart)?.start
-        else { return [] }
-        var starts: [Date] = []
-        var date = first
-        while date <= .now {
-            starts.append(date)
-            guard let next = calendar.date(byAdding: range.bucketStep, to: date), next > date
-            else { break }
-            date = next
-        }
-        return starts
-    }
-
-    private func bucketStart(for date: Date) -> Date {
-        calendar.dateInterval(of: range.bucketUnit, for: date)?.start ?? date
-    }
-
-    private var incomeExpenseBuckets: [PeriodBucket] {
-        var totals: [Date: (income: Double, expense: Double)] = [:]
-        for transaction in rangeTransactions {
-            // Transfers and adjustments have no net flow — excluded entirely.
-            guard !transaction.isExcludedFromFlow else { continue }
-
-            let key = bucketStart(for: transaction.date)
-            var entry = totals[key] ?? (0, 0)
-            if transaction.type == .refund {
-                entry.expense -= transaction.amount
-            } else if transaction.type.isIncomeLike {
-                entry.income += transaction.amount
-            } else {
-                entry.expense += transaction.amount
-            }
-            totals[key] = entry
-        }
-        return bucketStarts.map { start in
-            let entry = totals[start] ?? (0, 0)
-            return PeriodBucket(start: start, income: entry.income, expense: entry.expense)
-        }
-    }
-
-    private var incomeExpenseChart: some View {
-        GroupBox("Income vs Expense") {
-            // Diverging bars: income grows up, expense hangs down from zero.
-            Chart(incomeExpenseBuckets) { bucket in
-                BarMark(
-                    x: .value("Period", bucket.start, unit: range.bucketUnit),
-                    y: .value("Income", bucket.income)
-                )
-                .foregroundStyle(.green)
-
-                BarMark(
-                    x: .value("Period", bucket.start, unit: range.bucketUnit),
-                    y: .value("Expense", -bucket.expense)
-                )
-                .foregroundStyle(.red)
-            }
-            .frame(height: 200)
-        }
-    }
-
-    // MARK: - Category trend
-
-    private struct CategoryTrendPoint: Identifiable {
-        let categoryName: String
-        let bucketStart: Date
-        let total: Double
-        var id: String { "\(categoryName)|\(bucketStart.timeIntervalSinceReferenceDate)" }
-    }
-
-    /// Uses `effectiveAmount` (not `amount`) so a split transaction only
-    /// contributes the user's own portion to a category's trend — see
-    /// `Transaction.effectiveAmount`.
-    private var topCategoryNames: [String] {
-        let expenses = rangeTransactions.filter {
-            $0.type == .expense && $0.category != nil && !$0.isExcludedFromFlow
-        }
-        let groups = Dictionary(grouping: expenses) { $0.category!.name }
-        return groups
-            .map { (name: $0.key, total: $0.value.reduce(0) { $0 + $1.effectiveAmount }) }
-            .sorted { $0.total > $1.total }
-            .prefix(3)
-            .map(\.name)
-    }
-
-    private var categoryTrendPoints: [CategoryTrendPoint] {
-        let names = topCategoryNames
-        guard !names.isEmpty else { return [] }
-
-        var totals: [String: [Date: Double]] = [:]
-        for transaction in rangeTransactions where transaction.type == .expense && !transaction.isExcludedFromFlow {
-            guard let name = transaction.category?.name, names.contains(name) else { continue }
-            totals[name, default: [:]][bucketStart(for: transaction.date), default: 0] += transaction.effectiveAmount
-        }
-
-        // Zero-fill every bucket so each category draws a continuous line.
-        return names.flatMap { name in
-            bucketStarts.map { start in
-                CategoryTrendPoint(
-                    categoryName: name,
-                    bucketStart: start,
-                    total: totals[name]?[start] ?? 0
-                )
-            }
-        }
-    }
-
-    /// Single total per top category for the whole range — used for "Day",
-    /// where a hourly trend line would be noise rather than signal.
-    private var categoryTotalsForDay: [(name: String, total: Double)] {
-        let names = topCategoryNames
-        guard !names.isEmpty else { return [] }
-
-        var totals: [String: Double] = [:]
-        for transaction in rangeTransactions where transaction.type == .expense && !transaction.isExcludedFromFlow {
-            guard let name = transaction.category?.name, names.contains(name) else { continue }
-            totals[name, default: 0] += transaction.effectiveAmount
-        }
-        return names.map { (name: $0, total: totals[$0] ?? 0) }
-    }
-
-    private var categoryTrendChart: some View {
-        GroupBox("Top Category Trends") {
-            if range == .day {
-                if categoryTotalsForDay.isEmpty {
-                    Text("No categorized expenses in this range.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 8)
-                } else {
-                    Chart(categoryTotalsForDay, id: \.name) { entry in
-                        BarMark(
-                            x: .value("Category", entry.name),
-                            y: .value("Spent", entry.total)
-                        )
-                        .foregroundStyle(by: .value("Category", entry.name))
-                    }
-                    .frame(height: 180)
-                }
-            } else if categoryTrendPoints.isEmpty {
-                Text("No categorized expenses in this range.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
-            } else {
-                Chart(categoryTrendPoints) { point in
-                    LineMark(
-                        x: .value("Period", point.bucketStart, unit: range.bucketUnit),
-                        y: .value("Spent", point.total),
-                        series: .value("Category", point.categoryName)
-                    )
-                    .foregroundStyle(by: .value("Category", point.categoryName))
-                }
-                .frame(height: 180)
-            }
-        }
-    }
-
-    // MARK: - Key Metrics
-
-    private var liquidCash: Double {
-        accounts
-            .filter { $0.type == .bank || $0.type == .cash }
-            .reduce(0) { $0 + $1.balance }
-    }
-
-    private var currentMonthInterval: DateInterval {
-        calendar.dateInterval(of: .month, for: .now) ?? DateInterval(start: .now, duration: 0)
-    }
-
-    /// .expense + .taxAndFee within the current month, netted against refunds.
-    private var monthlyBurn: Double {
-        let monthTransactions = transactions.filter { currentMonthInterval.contains($0.date) }
-        let spent = monthTransactions
-            .filter { $0.type.isExpenseLike && !$0.isExcludedFromFlow }
-            .reduce(0) { $0 + $1.amount }
-        let refunded = monthTransactions.filter { $0.type == .refund }.reduce(0) { $0 + $1.amount }
-        return spent - refunded
-    }
-
-    /// Income-like transactions within the current month, excluding refund
-    /// (a refund reduces monthlyBurn instead of adding to income).
-    private var monthlyIncome: Double {
-        transactions
-            .filter {
-                $0.type.isIncomeLike && $0.type != .refund && !$0.isLendingRepayment
-                    && currentMonthInterval.contains($0.date)
-            }
-            .reduce(0) { $0 + $1.amount }
-    }
-
-    /// nil when there's no income this month yet — shown as "—" rather than
-    /// a misleading -infinity%/0%.
-    private var savingsRate: Double? {
-        guard monthlyIncome > 0 else { return nil }
-        return (monthlyIncome - monthlyBurn) / monthlyIncome
-    }
-
-    /// Unpaid recurring bills, SIP contributions, and EMI installments due
-    /// before the end of the current month.
-    private var unpaidCommitmentsThroughMonthEnd: Double {
-        let monthEnd = currentMonthInterval.end
-        let bills = recurringOccurrences
-            .filter { !$0.isPaid && $0.dueDate < monthEnd }
-            .reduce(0) { $0 + $1.expectedAmount }
-        let sips = investmentOccurrences
-            .filter { !$0.isContributed && $0.dueDate < monthEnd }
-            .reduce(0) { $0 + $1.expectedAmount }
-        let emis = emiInstallments
-            .filter { !$0.isPaid && $0.dueDate < monthEnd }
-            .reduce(0) { $0 + $1.amount }
-        return bills + sips + emis
-    }
-
-    private var safeSpend: Double {
-        liquidCash - unpaidCommitmentsThroughMonthEnd
-    }
-
-    /// Average total expense across the last 3 fully completed calendar months.
-    private var trailingThreeMonthAverageExpense: Double? {
-        guard let currentMonthStart = calendar.dateInterval(of: .month, for: .now)?.start
-        else { return nil }
-
-        var total = 0.0
-        var monthsCounted = 0
-        for offset in 1...3 {
-            guard let monthDate = calendar.date(byAdding: .month, value: -offset, to: currentMonthStart),
-                  let monthInterval = calendar.dateInterval(of: .month, for: monthDate)
-            else { continue }
-            let monthTransactions = transactions.filter { monthInterval.contains($0.date) }
-            let spent = monthTransactions
-                .filter { $0.type.isExpenseLike && !$0.isExcludedFromFlow }
-                .reduce(0) { $0 + $1.amount }
-            let refunded = monthTransactions.filter { $0.type == .refund }.reduce(0) { $0 + $1.amount }
-            total += spent - refunded
-            monthsCounted += 1
-        }
-        guard monthsCounted > 0 else { return nil }
-        return total / Double(monthsCounted)
-    }
-
-    /// This month's expense-so-far, extrapolated to a full-month pace.
-    private var projectedMonthSpend: Double {
-        let daysElapsed = max(calendar.component(.day, from: .now), 1)
-        let daysInMonth = calendar.range(of: .day, in: .month, for: .now)?.count ?? daysElapsed
-        return monthlyBurn / Double(daysElapsed) * Double(daysInMonth)
-    }
-
-    private enum RiskLevel: String {
-        case onTrack = "On Track"
-        case watch = "Watch"
-        case high = "High"
-        case unknown = "No Baseline"
-
-        var color: Color {
-            switch self {
-            case .onTrack: .green
-            case .watch: .orange
-            case .high: .red
-            case .unknown: .secondary
-            }
-        }
-    }
-
-    /// Compares this month's spend pace to the trailing 3-month average.
-    /// Thresholds are a heuristic, not a spec value — tune to taste.
-    private var riskLevel: RiskLevel {
-        guard let average = trailingThreeMonthAverageExpense, average > 0 else { return .unknown }
-        let ratio = projectedMonthSpend / average
-        switch ratio {
-        case ..<1.0: return .onTrack
-        case 1.0..<1.25: return .watch
-        default: return .high
-        }
-    }
-
-    private var keyMetricsCard: some View {
-        GroupBox("Key Metrics") {
-            VStack(spacing: 12) {
-                HStack(spacing: 12) {
-                    metricTile(title: "Liquid Cash", value: liquidCash, color: .primary)
-                    metricTile(title: "Monthly Burn", value: monthlyBurn, color: .red)
-                }
-                HStack(spacing: 12) {
-                    savingsRateTile
-                    metricTile(
-                        title: "Safe Spend",
-                        value: safeSpend,
-                        color: safeSpend >= 0 ? .green : .red
-                    )
-                }
-                HStack {
-                    Text("Risk Level")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(riskLevel.rawValue)
-                        .font(.caption.bold())
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(riskLevel.color.opacity(0.15), in: Capsule())
-                        .foregroundStyle(riskLevel.color)
-                }
-            }
-            .padding(.top, 4)
-        }
-    }
-
-    private func metricTile(title: String, value: Double, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
-                .font(.headline.monospacedDigit())
-                .foregroundStyle(color)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var savingsRateTile: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Savings Rate")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if let savingsRate {
-                Text(savingsRate, format: .percent.precision(.fractionLength(0)))
-                    .font(.headline.monospacedDigit())
-                    .foregroundStyle(savingsRate >= 0 ? .green : .red)
-            } else {
-                Text("—")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    // MARK: - Yearly Projection
-
-    private var yearStart: Date {
-        calendar.dateInterval(of: .year, for: .now)?.start ?? .now
-    }
-
-    private var currentCalendarMonthStart: Date {
-        calendar.dateInterval(of: .month, for: .now)?.start ?? .now
-    }
-
-    /// Gate: is there at least one full completed calendar month of history
-    /// (anywhere in the transaction record, not necessarily this year)?
-    private var hasCompletedMonthOfHistory: Bool {
-        guard let earliestDate = transactions.map(\.date).min() else { return false }
-        let earliestMonthStart = calendar.dateInterval(of: .month, for: earliestDate)?.start ?? earliestDate
-        return earliestMonthStart < currentCalendarMonthStart
-    }
-
-    /// Fully completed calendar months so far this year (January up to,
-    /// but not including, the current month).
-    private var completedMonthsThisYear: Int {
-        max(calendar.dateComponents([.month], from: yearStart, to: currentCalendarMonthStart).month ?? 0, 0)
-    }
-
-    private var remainingMonthsThisYear: Int {
-        12 - completedMonthsThisYear
-    }
-
-    /// Transaction IDs generated by a recurring bill, SIP, or EMI payment —
-    /// everything else counts as discretionary spend.
-    private var recurringLinkedTransactionIDs: Set<PersistentIdentifier> {
-        var ids = Set<PersistentIdentifier>()
-        for occurrence in recurringOccurrences {
-            if let linked = occurrence.linkedTransaction { ids.insert(linked.persistentModelID) }
-        }
-        for occurrence in investmentOccurrences {
-            if let linked = occurrence.linkedTransaction { ids.insert(linked.persistentModelID) }
-        }
-        for installment in emiInstallments {
-            if let linked = installment.linkedTransaction { ids.insert(linked.persistentModelID) }
-        }
-        return ids
-    }
-
-    private func isDiscretionaryExpense(_ transaction: Transaction) -> Bool {
-        transaction.type == .expense && !recurringLinkedTransactionIDs.contains(transaction.persistentModelID)
-    }
-
-    /// Actual discretionary spend across the completed months so far this year.
-    private var completedMonthsDiscretionarySpend: Double {
-        guard completedMonthsThisYear > 0 else { return 0 }
-        let interval = DateInterval(start: yearStart, end: currentCalendarMonthStart)
-        return transactions
-            .filter { isDiscretionaryExpense($0) && interval.contains($0.date) }
-            .reduce(0) { $0 + $1.amount }
-    }
-
-    private var averageMonthlyDiscretionarySpend: Double {
-        guard completedMonthsThisYear > 0 else { return 0 }
-        return completedMonthsDiscretionarySpend / Double(completedMonthsThisYear)
-    }
-
-    /// Recurring commitments (bills, SIPs, EMIs) for the whole calendar year:
-    /// actual amount where already paid/contributed, expected amount otherwise.
-    private var recurringContributionsForYear: Double {
-        guard let yearInterval = calendar.dateInterval(of: .year, for: .now) else { return 0 }
-        let bills = recurringOccurrences
-            .filter { yearInterval.contains($0.dueDate) }
-            .reduce(0) { $0 + ($1.isPaid ? ($1.actualAmount ?? $1.expectedAmount) : $1.expectedAmount) }
-        let sips = investmentOccurrences
-            .filter { yearInterval.contains($0.dueDate) }
-            .reduce(0) { $0 + ($1.isContributed ? ($1.actualAmount ?? $1.expectedAmount) : $1.expectedAmount) }
-        let emis = emiInstallments
-            .filter { yearInterval.contains($0.dueDate) }
-            .reduce(0) { $0 + $1.amount }
-        return bills + sips + emis
-    }
-
-    private var projectedYearlyDiscretionary: Double {
-        completedMonthsDiscretionarySpend + averageMonthlyDiscretionarySpend * Double(remainingMonthsThisYear)
-    }
-
-    private var projectedYearlyTotal: Double {
-        projectedYearlyDiscretionary + recurringContributionsForYear
-    }
-
-    private var yearLabel: String {
-        calendar.component(.year, from: .now).formatted(.number.grouping(.never))
-    }
-
-    private var yearlyProjectionCard: some View {
-        GroupBox("Yearly Projection") {
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(spacing: 4) {
-                    Text("Projected Total for \(yearLabel)")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Text(projectedYearlyTotal, format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
-                        .font(.title2.bold().monospacedDigit())
-                }
-                .frame(maxWidth: .infinity)
-
-                Divider()
-
-                HStack {
-                    Text("Discretionary")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(projectedYearlyDiscretionary,
-                         format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
-                        .font(.subheadline.monospacedDigit())
-                }
-                HStack {
-                    Text("Recurring (bills, SIPs, EMIs)")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(recurringContributionsForYear,
-                         format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
-                        .font(.subheadline.monospacedDigit())
-                }
-
-                Text("Based on \(completedMonthsThisYear) completed month\(completedMonthsThisYear == 1 ? "" : "s") of actual discretionary spend this year, averaged forward across the rest of \(yearLabel).")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.top, 4)
-        }
-    }
-}
-
-private enum TimeRange: String, CaseIterable {
-    case day = "Day"
-    case week = "Week"
-    case month = "Month"
-    case quarter = "Quarter"
-    case year = "Year"
-
-    /// How far back the range reaches from now.
-    var startOffset: DateComponents {
-        switch self {
-        case .day: DateComponents(day: -1)
-        case .week: DateComponents(day: -7)
-        case .month: DateComponents(month: -1)
-        case .quarter: DateComponents(month: -3)
-        case .year: DateComponents(year: -1)
-        }
-    }
-
-    /// Step between net-worth reconstruction samples.
-    var sampleStep: DateComponents {
-        switch self {
-        case .day: DateComponents(hour: 1)
-        case .week: DateComponents(day: 1)
-        case .month: DateComponents(weekOfYear: 1)
-        case .quarter, .year: DateComponents(month: 1)
-        }
-    }
-
-    /// Bucket size for the bar and trend charts.
-    var bucketUnit: Calendar.Component {
-        switch self {
-        case .day: .hour
-        case .week: .day
-        case .month, .quarter: .weekOfYear
-        case .year: .month
-        }
-    }
-
-    var bucketStep: DateComponents {
-        switch self {
-        case .day: DateComponents(hour: 1)
-        case .week: DateComponents(day: 1)
-        case .month, .quarter: DateComponents(weekOfYear: 1)
-        case .year: DateComponents(month: 1)
         }
     }
 }
