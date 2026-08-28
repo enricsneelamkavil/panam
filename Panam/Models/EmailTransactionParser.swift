@@ -116,9 +116,16 @@ enum EmailTransactionParser {
             emailBody, maxCharacters: StatementReconciler.maxChunkCharacters, overlapCharacters: StatementReconciler.chunkOverlapCharacters
         )
         guard chunks.count > 1 else {
-            let session = LanguageModelSession(instructions: instructions)
-            let response = try await session.respond(to: emailBody, generating: ParsedTransactionBatch.self)
-            return response.content.entries.filter(\.isGenuineTransaction)
+            do {
+                let session = LanguageModelSession(instructions: instructions)
+                let response = try await session.respond(to: emailBody, generating: ParsedTransactionBatch.self)
+                return response.content.entries.filter(\.isGenuineTransaction)
+            } catch let error as LanguageModelSession.GenerationError {
+                if let fallback = fallbackIfSafetyRefusal(error, emailBody: emailBody, subject: subject) {
+                    return [fallback]
+                }
+                throw error
+            }
         }
 
         // Only reached for an email long enough to actually risk
@@ -130,7 +137,7 @@ enum EmailTransactionParser {
         // reason (see StatementReconciler.maxChunkCharacters' doc comment).
         var allEntries: [ParsedTransaction] = []
         for chunk in chunks {
-            let chunkEntries = await parseWithRetry(chunk: chunk, instructions: instructions)
+            let chunkEntries = await parseWithRetry(chunk: chunk, instructions: instructions, subject: subject)
             appendDeduping(chunkEntries.filter(\.isGenuineTransaction), to: &allEntries)
         }
         return allEntries
@@ -145,7 +152,7 @@ enum EmailTransactionParser {
     /// ever reached for the rare multi-chunk email — see parse(_:)'s
     /// single-chunk fast path above for why swallowing an error here is
     /// fine in this context but wouldn't be for the common case.
-    private static func parseWithRetry(chunk: String, instructions: String) async -> [ParsedTransaction] {
+    private static func parseWithRetry(chunk: String, instructions: String, subject: String) async -> [ParsedTransaction] {
         do {
             let session = LanguageModelSession(instructions: instructions)
             let response = try await session.respond(to: chunk, generating: ParsedTransactionBatch.self)
@@ -154,11 +161,66 @@ enum EmailTransactionParser {
             guard chunk.count > StatementReconciler.minSplittableCharacters else { return [] }
             var entries: [ParsedTransaction] = []
             for half in StatementReconciler.splitInHalf(chunk) {
-                entries.append(contentsOf: await parseWithRetry(chunk: half, instructions: instructions))
+                entries.append(contentsOf: await parseWithRetry(chunk: half, instructions: instructions, subject: subject))
             }
             return entries
+        } catch let error as LanguageModelSession.GenerationError {
+            // Same safety-refusal fallback as the single-chunk path (see
+            // fallbackIfSafetyRefusal's doc comment) — a guardrail-refused
+            // chunk would otherwise just vanish into this function's
+            // ordinary swallow-everything-else `catch` below, silently
+            // dropping a real transaction from a digest email instead of
+            // recovering it deterministically.
+            if let fallback = fallbackIfSafetyRefusal(error, emailBody: chunk, subject: subject) {
+                return [fallback]
+            }
+            return []
         } catch {
             return []
+        }
+    }
+
+    /// Recovers from the on-device model refusing to generate anything at
+    /// all for safety reasons — GenerationError.guardrailViolation or
+    /// .refusal, both surfaced to the user as "Detected content likely to
+    /// be unsafe" — by falling back to DeterministicEmailParser's regex/
+    /// NSDataDetector extraction instead of losing the email entirely.
+    ///
+    /// Real-world testing against actual ICICI, HDFC, and RBL alert emails
+    /// showed the on-device safety guardrail refusing every one of them —
+    /// not because of any one excisable phrase (a fraud-report footer, a
+    /// phone number, a masked card number, and even the bare transaction
+    /// sentence alone all independently triggered it in isolation testing)
+    /// but, best guess, because the generic "<card> has been used for a
+    /// transaction of <amount>" notification phrasing real bank alerts use
+    /// is indistinguishable to the classifier from a phishing message
+    /// impersonating a bank. That means no amount of trimming the input
+    /// text reliably avoids the refusal — the trigger looks to be the
+    /// genuine transaction sentence itself, not anything around it — so
+    /// recovering the transaction has to happen on the Swift side instead
+    /// of by further prompting the model.
+    ///
+    /// Deliberately only intercepts these two specific safety-refusal
+    /// cases, never any other GenerationError (a real parse failure like
+    /// .decodingFailure or .unsupportedGuide still throws straight out to
+    /// the caller exactly as before) — DeterministicEmailParser is a
+    /// narrower, dumber extractor than the model, so reaching for it for
+    /// anything other than "the model point-blank refused to even try"
+    /// would trade the model's real extraction for a worse one.
+    ///
+    /// Returns nil (letting the original error propagate) when
+    /// DeterministicEmailParser itself can't confidently find both an
+    /// amount and a date — the caller still needs to see a genuine
+    /// failure state in that case (EmailFetchCoordinator's existing
+    /// parseError candidate), never a silently empty result.
+    private static func fallbackIfSafetyRefusal(
+        _ error: LanguageModelSession.GenerationError, emailBody: String, subject: String
+    ) -> ParsedTransaction? {
+        switch error {
+        case .guardrailViolation, .refusal:
+            return DeterministicEmailParser.extract(emailBody: emailBody, subject: subject)
+        default:
+            return nil
         }
     }
 
