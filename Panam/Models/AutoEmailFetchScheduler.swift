@@ -30,7 +30,7 @@ enum AutoEmailFetchScheduler {
             ?? AppSettings.autoEmailFetchEnabledDefault else { return }
         let request = BGAppRefreshTaskRequest(identifier: taskIdentifier)
         request.earliestBeginDate = nextTenPM()
-        try? BGTaskScheduler.shared.submit(request)
+        BGTaskScheduler.shared.submitTaskRequest(request) { _ in }
     }
 
     @MainActor

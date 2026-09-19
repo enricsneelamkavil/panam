@@ -83,7 +83,7 @@ struct VoiceEntrySheet: View {
                 }
                 .disabled(permissionDenied || isParsing)
 
-                Text(isRecording ? "Listening… tap to stop" : "Tap to start recording")
+                Text(isRecording ? "Listening\u{2026} tap to stop" : "Tap to start recording")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -164,8 +164,21 @@ struct VoiceEntrySheet: View {
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
         inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-            request.append(buffer)
+        try inputNode.installAudioTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            if let pcmBuffer = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: AVAudioFrameCount(buffer.frameCapacity)) {
+                pcmBuffer.frameLength = AVAudioFrameCount(buffer.frameLength)
+                buffer.withUnsafeAudioBufferList { srcList in
+                    let dstList = pcmBuffer.mutableAudioBufferList
+                    let srcPointer = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: srcList))
+                    let dstPointer = UnsafeMutableAudioBufferListPointer(dstList)
+                    for i in 0..<srcPointer.count {
+                        if let srcData = srcPointer[i].mData, let dstData = dstPointer[i].mData {
+                            dstData.copyMemory(from: srcData, byteCount: Int(srcPointer[i].mDataByteSize))
+                        }
+                    }
+                }
+                request.append(pcmBuffer)
+            }
         }
 
         audioEngine.prepare()

@@ -365,7 +365,7 @@ enum DematHoldingExtractor {
             let session = LanguageModelSession(instructions: instructions)
             let response = try await session.respond(to: chunk, generating: DematHoldingExtraction.self)
             return response.content.holdings
-        } catch LanguageModelSession.GenerationError.exceededContextWindowSize(_) {
+        } catch LanguageModelError.contextSizeExceeded(_) {
             guard chunk.count > StatementReconciler.minSplittableCharacters else { return [] }
             var holdings: [DematHolding] = []
             for half in StatementReconciler.splitInHalf(chunk) {

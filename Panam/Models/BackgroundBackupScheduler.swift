@@ -55,7 +55,7 @@ enum BackgroundBackupScheduler {
 
         let request = BGAppRefreshTaskRequest(identifier: taskIdentifier)
         request.earliestBeginDate = nextOccurrence(ofHour: hour)
-        try? BGTaskScheduler.shared.submit(request)
+        BGTaskScheduler.shared.submitTaskRequest(request) { _ in }
     }
 
     /// The next future date/time at the given hour — today if that hour

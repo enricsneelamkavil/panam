@@ -612,7 +612,7 @@ enum StatementReconciler {
             let session = LanguageModelSession(instructions: instructions)
             let response = try await session.respond(to: chunk, generating: StatementExtraction.self)
             return response.content.entries
-        } catch LanguageModelSession.GenerationError.exceededContextWindowSize(_) {
+        } catch LanguageModelError.contextSizeExceeded(_) {
             guard chunk.count > minSplittableCharacters else { return [] }
             var entries: [StatementLineItem] = []
             for half in splitInHalf(chunk) {

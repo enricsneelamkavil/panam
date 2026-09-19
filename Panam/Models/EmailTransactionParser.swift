@@ -120,7 +120,7 @@ enum EmailTransactionParser {
                 let session = LanguageModelSession(instructions: instructions)
                 let response = try await session.respond(to: emailBody, generating: ParsedTransactionBatch.self)
                 return response.content.entries.filter(\.isGenuineTransaction)
-            } catch let error as LanguageModelSession.GenerationError {
+            } catch let error as LanguageModelError {
                 if let fallback = fallbackIfSafetyRefusal(error, emailBody: emailBody, subject: subject) {
                     return [fallback]
                 }
@@ -129,7 +129,7 @@ enum EmailTransactionParser {
         }
 
         // Only reached for an email long enough to actually risk
-        // GenerationError.exceededContextWindowSize — the same risk a
+        // LanguageModelError.contextSizeExceeded — the same risk a
         // multi-page statement runs, just far rarer for a single email
         // (an unusually large digest). Reuses StatementReconciler's own
         // chunking budget/helpers directly rather than duplicating them —
@@ -144,7 +144,7 @@ enum EmailTransactionParser {
     }
 
     /// Runs one chunk through the model, halving and retrying on
-    /// GenerationError.exceededContextWindowSize — same shape as
+    /// LanguageModelError.contextSizeExceeded — same shape as
     /// StatementReconciler.extractLineItemsWithRetry/DematHoldingExtractor.
     /// extractHoldingsWithRetry, kept as its own small copy rather than a
     /// shared generic (each wraps a different @Generable response type)
@@ -157,14 +157,14 @@ enum EmailTransactionParser {
             let session = LanguageModelSession(instructions: instructions)
             let response = try await session.respond(to: chunk, generating: ParsedTransactionBatch.self)
             return response.content.entries
-        } catch LanguageModelSession.GenerationError.exceededContextWindowSize(_) {
+        } catch LanguageModelError.contextSizeExceeded(_) {
             guard chunk.count > StatementReconciler.minSplittableCharacters else { return [] }
             var entries: [ParsedTransaction] = []
             for half in StatementReconciler.splitInHalf(chunk) {
                 entries.append(contentsOf: await parseWithRetry(chunk: half, instructions: instructions, subject: subject))
             }
             return entries
-        } catch let error as LanguageModelSession.GenerationError {
+        } catch let error as LanguageModelError {
             // Same safety-refusal fallback as the single-chunk path (see
             // fallbackIfSafetyRefusal's doc comment) — a guardrail-refused
             // chunk would otherwise just vanish into this function's
@@ -181,7 +181,7 @@ enum EmailTransactionParser {
     }
 
     /// Recovers from the on-device model refusing to generate anything at
-    /// all for safety reasons — GenerationError.guardrailViolation or
+    /// all for safety reasons — LanguageModelError.guardrailViolation or
     /// .refusal, both surfaced to the user as "Detected content likely to
     /// be unsafe" — by falling back to DeterministicEmailParser's regex/
     /// NSDataDetector extraction instead of losing the email entirely.
@@ -201,7 +201,7 @@ enum EmailTransactionParser {
     /// of by further prompting the model.
     ///
     /// Deliberately only intercepts these two specific safety-refusal
-    /// cases, never any other GenerationError (a real parse failure like
+    /// cases, never any other LanguageModelError (a real parse failure like
     /// .decodingFailure or .unsupportedGuide still throws straight out to
     /// the caller exactly as before) — DeterministicEmailParser is a
     /// narrower, dumber extractor than the model, so reaching for it for
@@ -214,7 +214,7 @@ enum EmailTransactionParser {
     /// failure state in that case (EmailFetchCoordinator's existing
     /// parseError candidate), never a silently empty result.
     private static func fallbackIfSafetyRefusal(
-        _ error: LanguageModelSession.GenerationError, emailBody: String, subject: String
+        _ error: LanguageModelError, emailBody: String, subject: String
     ) -> ParsedTransaction? {
         switch error {
         case .guardrailViolation, .refusal:
