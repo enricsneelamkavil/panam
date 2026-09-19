@@ -62,7 +62,7 @@ struct AccountsView: View {
 
     /// Credit Card rows already pushed to their own detail view — every
     /// account type now does, so Edit lives in that destination's toolbar
-    /// instead of being the row's own tap target.
+    /// instead of being the row's default tap target the way it used to work from AccountsView.
     @ViewBuilder
     private func destinationView(for account: Account) -> some View {
         if account.type == .creditCard {
@@ -83,7 +83,7 @@ struct AccountsView: View {
 
     private func deleteAccounts(at offsets: IndexSet, from accountsOfType: [Account]) {
         for index in offsets {
-            modelContext.delete(accountsOfType[index])
+            safelyDelete(account: accountsOfType[index], context: modelContext)
         }
     }
 }
@@ -118,5 +118,4 @@ private struct AccountRow: View {
 
 #Preview {
     AccountsView()
-        .modelContainer(for: [Account.self, Category.self, Transaction.self], inMemory: true)
 }

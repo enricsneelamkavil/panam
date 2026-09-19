@@ -45,8 +45,7 @@ struct FinancialSnapshotQuery: EntityQuery {
 
     @MainActor
     private func fetchSnapshot() throws -> FinancialSnapshotEntity {
-        let container = try ModelContainer(for: Account.self, Transaction.self, Investment.self, Loan.self, RecurringPayment.self)
-        let context = container.mainContext
+        let context = SharedModelContainer.main.mainContext
 
         let accounts = (try? context.fetch(FetchDescriptor<Account>())) ?? []
         let investments = (try? context.fetch(FetchDescriptor<Investment>())) ?? []
@@ -92,8 +91,7 @@ struct GetFinancialSnapshotIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog {
-        let container = try ModelContainer(for: Account.self, Transaction.self, Investment.self, Loan.self, RecurringPayment.self)
-        let context = container.mainContext
+        let context = SharedModelContainer.main.mainContext
 
         let accounts = (try? context.fetch(FetchDescriptor<Account>())) ?? []
         let investments = (try? context.fetch(FetchDescriptor<Investment>())) ?? []
@@ -143,8 +141,7 @@ struct LogTransactionIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let container = try ModelContainer(for: Account.self, Transaction.self, Category.self)
-        let context = container.mainContext
+        let context = SharedModelContainer.main.mainContext
 
         let isIncome = (type.lowercased() == "income")
         let transactionType: TransactionType = isIncome ? .income : .expense

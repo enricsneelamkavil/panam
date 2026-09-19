@@ -18,6 +18,7 @@ struct TransactionsView: View {
     @Query private var occurrences: [RecurringOccurrence]
     @Query private var investmentOccurrences: [InvestmentOccurrence]
     @Query(sort: \MoneyEvent.date, order: .reverse) private var allMoneyEvents: [MoneyEvent]
+    @Query private var lendingEntries: [LendingEntry]
 
     @State private var transactionToEdit: Transaction?
     @State private var selectedEvent: MoneyEvent?
@@ -163,7 +164,10 @@ struct TransactionsView: View {
                     ForEach(groupedByDay, id: \.day) { group in
                         Section(dayHeader(for: group.day)) {
                             ForEach(group.transactions) { transaction in
-                                TransactionRow(transaction: transaction)
+                                let linkedLending = transaction.isLendingRepayment
+                                    ? lendingEntries.first { $0.linkedTransaction?.persistentModelID == transaction.persistentModelID }
+                                    : nil
+                                TransactionRow(transaction: transaction, linkedLendingEntry: linkedLending)
                                     .contentShape(Rectangle())
                                     .onTapGesture {
                                         transactionToEdit = transaction
@@ -252,7 +256,9 @@ struct TransactionsView: View {
                 // Consumed — cleared right back to nil so simply switching
                 // to the Flow tab again later (with nothing newly tapped)
                 // doesn't silently re-apply this same filter.
-                tabNavigation.pendingTransactionsDayFilter = nil
+                Task { @MainActor in
+                    tabNavigation.pendingTransactionsDayFilter = nil
+                }
             }
         }
     }
@@ -540,12 +546,11 @@ private struct MoneyEventDetailSheet: View {
 
 struct TransactionRow: View {
     let transaction: Transaction
+    let linkedLendingEntry: LendingEntry?
 
-    @Query private var lendingEntries: [LendingEntry]
-
-    private var linkedLendingEntry: LendingEntry? {
-        guard transaction.isLendingRepayment else { return nil }
-        return lendingEntries.first { $0.linkedTransaction === transaction }
+    init(transaction: Transaction, linkedLendingEntry: LendingEntry? = nil) {
+        self.transaction = transaction
+        self.linkedLendingEntry = linkedLendingEntry
     }
 
     var body: some View {

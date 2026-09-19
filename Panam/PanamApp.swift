@@ -1,7 +1,6 @@
 //
 //  PanamApp.swift
 //  Panam
-
 //
 
 import SwiftUI
@@ -55,33 +54,9 @@ struct PanamApp: App {
     @AppStorage(AppSettings.autoLockMinutesKey)
     private var autoLockMinutes = AppSettings.autoLockMinutesDefault
 
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Account.self,
-            Category.self,
-            Transaction.self,
-            Person.self,
-            RecurringPayment.self,
-            RecurringOccurrence.self,
-            Investment.self,
-            InvestmentOccurrence.self,
-            LendingEntry.self,
-            CreditCardEMI.self,
-            EMIInstallment.self,
-            CardPayment.self,
-            SplitAllocation.self,
-            MoneyEvent.self,
-            Loan.self,
-            LoanInstallment.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+    var sharedModelContainer: ModelContainer {
+        SharedModelContainer.main
+    }
 
     init() {
         // Set before any notification could possibly fire — the fetch-
@@ -103,6 +78,7 @@ struct PanamApp: App {
         MoneyEventMigration.runInvestmentSourceBackfillIfNeeded(context: sharedModelContainer.mainContext)
         BackupIDBackfill.runIfNeeded(context: sharedModelContainer.mainContext)
         TransactionOrphanCleanup.runIfNeeded(context: sharedModelContainer.mainContext)
+        AccountOrphanCleanup.runIfNeeded(context: sharedModelContainer.mainContext)
 
         // Registration must happen unconditionally, before launch finishes,
         // regardless of whether auto-backup is currently toggled on —
@@ -202,24 +178,40 @@ struct PanamApp: App {
                 switch newPhase {
                 case .background:
                     backgroundedAt = .now
-                case .active:
-                    guard let lastBackgrounded = backgroundedAt else { break }
-                    defer { backgroundedAt = nil }
-                    guard biometricLockEnabled, autoLockMinutes > 0 else { break }
-                    let elapsed = Date.now.timeIntervalSince(lastBackgrounded)
-                    if elapsed >= Double(autoLockMinutes) * 60 {
+                    // Relock immediately on background so the multitasking app
+                    // switcher preview never shows unprotected financial data.
+                    if biometricLockEnabled {
                         authState.isUnlocked = false
                     }
-                default:
-                    break
-                }
-                // Independent of the auto-lock check above — resuming from
-                // background is exactly the "opened the app" moment this
-                // backstop exists for, whether or not biometric lock is on.
-                if newPhase == .active {
+
+                case .active:
+                    // Cold launch bypasses this (backgroundedAt stays nil) —
+                    // authState starts locked anyway, so Face ID prompts
+                    // immediately on first view appear.
+                    if let bgTime = backgroundedAt {
+                        let elapsedMinutes = Date.now.timeIntervalSince(bgTime) / 60.0
+                        if biometricLockEnabled && elapsedMinutes >= Double(autoLockMinutes) {
+                            authState.isUnlocked = false
+                        }
+                    }
+                    backgroundedAt = nil
+
+                    // Backstops for resuming from background on/after the due
+                    // hour — see runAutopayIfDue's and runAutoBackupIfDue's
+                    // doc comments.
                     runAutopayIfDue()
-                    Task { await runAutoBackupIfDue() }
-                    Task { await AutoEmailFetchScheduler.fetchIfDue(container: sharedModelContainer) }
+                    Task {
+                        await runAutoBackupIfDue()
+                    }
+                    Task {
+                        await AutoEmailFetchScheduler.fetchIfDue(container: sharedModelContainer)
+                    }
+
+                case .inactive:
+                    break
+
+                @unknown default:
+                    break
                 }
             }
         }
