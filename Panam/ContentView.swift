@@ -15,6 +15,7 @@ struct ContentView: View {
     // tab itself, not just push more content onto its own tab's stack.
     @Environment(TabNavigationState.self) private var tabNavigation
     @State private var showingAddTransaction = false
+    @State private var searchText = ""
 
     enum AppTab {
         case today, flow, analyze, investments, add
@@ -22,6 +23,11 @@ struct ContentView: View {
 
     var body: some View {
         @Bindable var tabNavigation = tabNavigation
+
+        // Native SwiftUI TabView: 4 main tabs + 1 trailing search/action tab (TabRole.search).
+        // Combined with .searchable and .tabViewSearchActivation, iOS 18 natively renders
+        // the 4 tabs inside the main Liquid Glass capsule and the 1 Add tab as a separate
+        // prominent button on the trailing edge (Apple News+ style).
         TabView(selection: $tabNavigation.selectedTab) {
             Tab("Today", systemImage: "house.fill", value: AppTab.today) {
                 DashboardView()
@@ -38,17 +44,16 @@ struct ContentView: View {
             Tab("Investments", systemImage: "chart.line.uptrend.xyaxis", value: AppTab.investments) {
                 InvestmentsView()
             }
-            // role: .search renders this as the detached circle beside the main capsule,
-            // matching the Apple Music / App Store layout natively.
             Tab("Add", systemImage: "plus", value: AppTab.add, role: .search) {
                 Color.clear
             }
         }
+        .searchable(text: $searchText, prompt: "Search Panam...")
+        .tabViewSearchActivation(.searchTabSelection)
         .onChange(of: tabNavigation.selectedTab) { oldValue, newValue in
             if newValue == .add {
                 showingAddTransaction = true
-                // Reset immediately so the content never flashes and the
-                // previously active tab stays visually selected.
+                // Reset immediately so the previously active tab remains visually selected.
                 tabNavigation.selectedTab = oldValue
             }
         }

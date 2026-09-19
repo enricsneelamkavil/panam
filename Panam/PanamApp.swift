@@ -45,7 +45,7 @@ struct PanamApp: App {
     @State private var authState: AuthState
     @State private var privacyState = PrivacyState()
     @State private var gmailAuth = GmailAuthManager()
-    @State private var emailFetchCoordinator = EmailFetchCoordinator()
+    @State private var emailFetchCoordinator = EmailFetchCoordinator.shared
     @State private var tabNavigation = TabNavigationState()
     @State private var backgroundedAt: Date?
 
@@ -110,6 +110,8 @@ struct PanamApp: App {
         // part that actually no-ops when the setting is off.
         BackgroundBackupScheduler.register(container: sharedModelContainer)
         BackgroundBackupScheduler.scheduleNext()
+        AutoEmailFetchScheduler.register(container: sharedModelContainer)
+        AutoEmailFetchScheduler.scheduleNext()
     }
 
     /// The foreground half of auto-backup's two independent triggers — see
@@ -171,6 +173,7 @@ struct PanamApp: App {
                 // from background, mirroring runAutoBackupIfDue's two
                 // triggers exactly (see AutopayCoordinator).
                 runAutopayIfDue()
+                Task { await AutoEmailFetchScheduler.fetchIfDue(container: sharedModelContainer) }
 
                 // Silently restores GIDSignIn's session (for
                 // gmailAuth.signedInEmail) — irrelevant to authState.authMode
@@ -216,6 +219,7 @@ struct PanamApp: App {
                 if newPhase == .active {
                     runAutopayIfDue()
                     Task { await runAutoBackupIfDue() }
+                    Task { await AutoEmailFetchScheduler.fetchIfDue(container: sharedModelContainer) }
                 }
             }
         }

@@ -10,6 +10,8 @@ final class RecurringOccurrence {
     var actualAmount: Double?    // set when marked paid; nil = not yet paid
     var isPaid: Bool
     var paidDate: Date?
+    var isBounced: Bool = false
+    var bouncedDate: Date?
     var linkedTransaction: Transaction?   // the Transaction created when marked paid
     var parent: RecurringPayment?
 

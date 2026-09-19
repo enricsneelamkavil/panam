@@ -27,7 +27,7 @@ struct ParsedTransaction {
     @Guide(description: "The transaction date, resolved from any spoken reference (e.g. 'yesterday', 'last Friday') and written in STRICT yyyy-MM-dd (ISO 8601) format only — 4-digit year, then 2-digit month, then 2-digit day, separated by hyphens (e.g. \"2026-07-14\" for 14 July 2026). Never day-first, never a slash-separated format, never a month name. nil or omitted means today.")
     var resolvedDateString: String?
 
-    @Guide(description: "The payment method mentioned (e.g. 'cash', 'UPI', 'card'), or nil if not stated")
+    @Guide(description: "The payment method mentioned. Use one of: Cash, UPI, Card, Net Banking, Wallet, or Other. Return nil if not stated.")
     var paymentMethodName: String?
 
     @Guide(description: "Only true if this email reports a specific, single debit or credit that happened to a specific account — not a promotional offer, fee schedule, policy update, or general notice, even if it mentions rupee amounts.")

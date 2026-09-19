@@ -10,6 +10,8 @@ final class InvestmentOccurrence {
     var actualAmount: Double?
     var isContributed: Bool
     var contributedDate: Date?
+    var isBounced: Bool = false
+    var bouncedDate: Date?
     var linkedTransaction: Transaction?
     var parent: Investment?
 

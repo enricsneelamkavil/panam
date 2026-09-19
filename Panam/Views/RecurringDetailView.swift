@@ -53,13 +53,6 @@ struct RecurringDetailView: View {
                     LabeledContent("Monthly Equivalent") {
                         Text(payment.monthlyEquivalentCost, format: Self.currencyFormat)
                     }
-                    // Tappable, unlike a plain LabeledContent value — same
-                    // toggle this necessary flag gets from the row in
-                    // RecurringView (which shows it read-only, since a
-                    // nested Button there would fight the row's own
-                    // NavigationLink for the tap). This is the merged
-                    // detail view's counterpart, moved here from the old
-                    // standalone SubscriptionsView's row.
                     LabeledContent("Necessary?") {
                         Button {
                             cycleNecessary()
@@ -87,6 +80,23 @@ struct RecurringDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        if !occurrence.isPaid && !occurrence.isBounced {
+                            Button {
+                                occurrence.isBounced = true
+                                occurrence.bouncedDate = .now
+                            } label: {
+                                Label("Mark as Bounced", systemImage: "xmark.circle")
+                            }
+                            .tint(.orange)
+                        } else if occurrence.isBounced {
+                            Button {
+                                occurrence.isBounced = false
+                                occurrence.bouncedDate = nil
+                            } label: {
+                                Label("Mark as Not Bounced", systemImage: "arrow.uturn.backward")
+                            }
+                            .tint(.blue)
+                        }
                         Button(role: .destructive) {
                             deleteOccurrence(occurrence)
                         } label: {
@@ -119,12 +129,31 @@ struct RecurringDetailView: View {
                     onMarkUnpaid: { markUnpaid(occurrence) }
                 )
                 .presentationDetents([.medium])
+            } else if occurrence.isBounced {
+                PaymentSummaryView(
+                    title: "Payment Details",
+                    dueDate: occurrence.dueDate,
+                    expectedAmount: occurrence.expectedAmount,
+                    actualAmount: 0,
+                    completedDate: occurrence.bouncedDate,
+                    amountLabel: "Paid",
+                    dateLabel: "Bounced On",
+                    statusLabel: "Bounced",
+                    actionButtonTitle: "Mark as Not Bounced",
+                    onMarkUnpaid: {
+                        occurrence.isBounced = false
+                        occurrence.bouncedDate = nil
+                    }
+                )
+                .presentationDetents([.medium])
             } else {
                 PaymentConfirmationSheet(
                     title: "Mark as Paid",
                     dueDate: occurrence.dueDate,
                     expectedAmount: occurrence.expectedAmount
                 ) { actual in
+                    occurrence.isBounced = false
+                    occurrence.bouncedDate = nil
                     occurrence.markPaid(actualAmount: actual, context: modelContext)
                 }
                 .presentationDetents([.medium])
@@ -155,8 +184,6 @@ struct RecurringDetailView: View {
         }
     }
 
-    /// First tap marks it necessary; after that, taps toggle true/false.
-    /// Never returns to nil once set. Ported from the old SubscriptionsView row.
     private func cycleNecessary() {
         switch payment.isNecessary {
         case nil: payment.isNecessary = true
@@ -176,14 +203,6 @@ struct RecurringDetailView: View {
         occurrence.paidDate = nil
     }
 
-    /// Swipe-to-delete for a single scheduled instance. Unpaid occurrences
-    /// have no linked transaction or balance impact, so they're just
-    /// removed outright. A paid occurrence is routed through the same
-    /// reversal markUnpaid already does for the "Mark as Unpaid" action
-    /// first — that clears linkedTransaction and reverses the account
-    /// balance — so the occurrence is never deleted while still pointing at
-    /// a real Transaction, which would orphan it (see Transaction+SafeDelete's
-    /// doc comment for the bug class this avoids).
     private func deleteOccurrence(_ occurrence: RecurringOccurrence) {
         if occurrence.isPaid {
             markUnpaid(occurrence)
@@ -217,6 +236,17 @@ private struct OccurrenceRow: View {
                             .font(.subheadline.monospacedDigit())
                             .foregroundStyle(.green)
                     }
+                }
+            } else if occurrence.isBounced {
+                HStack(spacing: 6) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.orange)
+                    Text("Bounced")
+                        .font(.subheadline)
+                        .foregroundStyle(.orange)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
             } else {
                 HStack(spacing: 4) {

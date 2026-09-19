@@ -240,6 +240,10 @@ private struct RecurringPaymentRow: View {
             .dueDate
     }
 
+    private var bouncedCount: Int {
+        payment.occurrences.filter(\.isBounced).count
+    }
+
     private var costPerDayLabel: String {
         guard privacyState?.amountsHidden != true else { return "••••••/day" }
         let amount = payment.costPerDay.formatted(
@@ -277,6 +281,11 @@ private struct RecurringPaymentRow: View {
                 Text(payment.cadence.displayName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if bouncedCount > 0 {
+                    Label("\(bouncedCount) bounced payment\(bouncedCount == 1 ? "" : "s")", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
                 if let nextUnpaidDueDate {
                     Text("Next: \(nextUnpaidDueDate.formatted(date: .abbreviated, time: .omitted))")
                         .font(.caption2)

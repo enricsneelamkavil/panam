@@ -37,7 +37,8 @@
 	</array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>enric.Plush.autoBackup</string>
+			<string>enric.Plush.autoBackup</string>
+			<string>enric.Plush.autoEmailFetch</string>
 	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>

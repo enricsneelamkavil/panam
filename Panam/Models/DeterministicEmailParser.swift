@@ -40,9 +40,14 @@ enum DeterministicEmailParser {
             merchantName: merchantGuess(in: emailBody) ?? bankNameFallback(in: subject),
             lastFourDigits: lastFourDigits(in: emailBody),
             resolvedDateString: dateString,
-            paymentMethodName: nil,
+            paymentMethodName: inferredPaymentMethod(in: emailBody),
             isGenuineTransaction: true
         )
+    }
+
+    private static func inferredPaymentMethod(in text: String) -> String? {
+        let lowered = text.lowercased()
+        return PaymentMethod.inferred(fromEmailValue: lowered)?.rawValue
     }
 
     // MARK: - Amount

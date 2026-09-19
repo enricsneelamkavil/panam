@@ -142,6 +142,23 @@ struct InvestmentDetailView: View {
                         }
                         .buttonStyle(.plain)
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            if !occurrence.isContributed && !occurrence.isBounced {
+                                Button {
+                                    occurrence.isBounced = true
+                                    occurrence.bouncedDate = .now
+                                } label: {
+                                    Label("Mark as Bounced", systemImage: "xmark.circle")
+                                }
+                                .tint(.orange)
+                            } else if occurrence.isBounced {
+                                Button {
+                                    occurrence.isBounced = false
+                                    occurrence.bouncedDate = nil
+                                } label: {
+                                    Label("Mark as Not Bounced", systemImage: "arrow.uturn.backward")
+                                }
+                                .tint(.blue)
+                            }
                             if occurrence.isContributed {
                                 Button(role: .destructive) {
                                     markUnpaid(occurrence)
@@ -177,6 +194,23 @@ struct InvestmentDetailView: View {
                     amountLabel: "Contributed",
                     dateLabel: "Contributed On",
                     onMarkUnpaid: { markUnpaid(occurrence) }
+                )
+                .presentationDetents([.medium])
+            } else if occurrence.isBounced {
+                PaymentSummaryView(
+                    title: "Contribution Details",
+                    dueDate: occurrence.dueDate,
+                    expectedAmount: occurrence.expectedAmount,
+                    actualAmount: 0,
+                    completedDate: occurrence.bouncedDate,
+                    amountLabel: "Contributed",
+                    dateLabel: "Bounced On",
+                    statusLabel: "Bounced",
+                    actionButtonTitle: "Mark as Not Bounced",
+                    onMarkUnpaid: {
+                        occurrence.isBounced = false
+                        occurrence.bouncedDate = nil
+                    }
                 )
                 .presentationDetents([.medium])
             } else {
@@ -223,6 +257,17 @@ private struct OccurrenceRow: View {
                             .font(.subheadline.monospacedDigit())
                             .foregroundStyle(.green)
                     }
+                }
+            } else if occurrence.isBounced {
+                HStack(spacing: 6) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.orange)
+                    Text("Bounced")
+                        .font(.subheadline)
+                        .foregroundStyle(.orange)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
             } else {
                 HStack(spacing: 4) {
@@ -296,6 +341,8 @@ private struct MarkContributedView: View {
 
     private func markContributed() {
         guard let actualAmount, actualAmount > 0 else { return }
+        occurrence.isBounced = false
+        occurrence.bouncedDate = nil
         occurrence.markContributed(actualAmount: actualAmount, context: modelContext)
         dismiss()
     }

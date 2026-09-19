@@ -56,6 +56,10 @@ struct FetchedStatementEmail: Identifiable {
 @MainActor
 @Observable
 final class EmailFetchCoordinator {
+    /// Shared so a scheduled fetch and the Email Import screen present the
+    /// same in-memory review batch when they run in the same app process.
+    static let shared = EmailFetchCoordinator()
+
     private(set) var isFetching = false
     private(set) var fetchType: FetchKind?
     private(set) var processedCount = 0
@@ -137,6 +141,25 @@ final class EmailFetchCoordinator {
                 senderTerms: senderTerms, categories: categories, accounts: accounts, transactions: transactions
             )
         }
+    }
+
+    /// Awaitable form used by the scheduled background fetch. The regular UI
+    /// entry point above deliberately launches its own task so the sheet can
+    /// close immediately; a background task needs the opposite lifetime.
+    func fetchTransactionEmails(
+        senderTerms: [String], categories: [Category], accounts: [Account], transactions: [Transaction]
+    ) async {
+        guard !isFetching else { return }
+        isFetching = true
+        fetchType = .transactions
+        fetchErrorMessage = nil
+        transactionCandidates = []
+        processedCount = 0
+        totalCount = 0
+        fetchStartedAt = .now
+        await runTransactionFetch(
+            senderTerms: senderTerms, categories: categories, accounts: accounts, transactions: transactions
+        )
     }
 
     private func runTransactionFetch(

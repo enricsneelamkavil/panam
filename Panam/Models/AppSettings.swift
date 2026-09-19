@@ -46,6 +46,14 @@ enum AppSettings {
     /// autopays twice.
     static let lastAutopayRunDateKey = "lastAutopayRunDate"
 
+    /// Enables the daily transaction-email fetch. iOS treats 10 PM as an
+    /// earliest-start hint, so the foreground fallback runs it as soon as the
+    /// app next becomes active after that time.
+    static let autoEmailFetchEnabledKey = "autoEmailFetchEnabled"
+    static let autoEmailFetchEnabledDefault = true
+    static let autoEmailFetchHour = 22
+    static let lastAutoEmailFetchDateKey = "lastAutoEmailFetchDate"
+
     /// Newline-joined list of Gmail sender addresses/domains/keywords to search
     /// for transaction alert emails (e.g. "alerts@hdfcbank.net"). Seeded with a
     /// starting set of common Indian bank alert senders on first launch of the

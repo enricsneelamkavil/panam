@@ -15,6 +15,12 @@ final class Transaction {
     var toAccount: Account?
     var category: Category?
     var paymentMethod: PaymentMethod?
+    /// Newline-separated methods for the uncommon case where one transaction
+    /// was paid using more than one method. `paymentMethod` remains the primary
+    /// method for compatibility with existing data and account filtering.
+    var paymentMethodsRaw: String = ""
+    /// JSON-encoded allocation details for the non-primary payment methods.
+    var additionalPaymentMethodDetailsRaw: String = ""
     var upiApp: String?
     /// Set when this expense was paid by someone else on your behalf — no
     /// account is involved (`account == nil`), but it still counts as your
@@ -53,6 +59,39 @@ final class Transaction {
 }
 
 extension Transaction {
+    var additionalPaymentMethods: [AdditionalPaymentMethod] {
+        get {
+            guard let data = additionalPaymentMethodDetailsRaw.data(using: .utf8),
+                  let details = try? JSONDecoder().decode([AdditionalPaymentMethod].self, from: data)
+            else { return [] }
+            return details
+        }
+        set {
+            guard let data = try? JSONEncoder().encode(newValue) else {
+                additionalPaymentMethodDetailsRaw = ""
+                return
+            }
+            additionalPaymentMethodDetailsRaw = String(decoding: data, as: UTF8.self)
+        }
+    }
+
+    var paymentMethods: [PaymentMethod] {
+        get {
+            let stored = paymentMethodsRaw
+                .split(separator: "\n")
+                .compactMap { PaymentMethod(rawValue: String($0)) }
+            if !stored.isEmpty { return stored }
+            return paymentMethod.map { [$0] } ?? []
+        }
+        set {
+            let unique = newValue.reduce(into: [PaymentMethod]()) { methods, method in
+                if !methods.contains(method) { methods.append(method) }
+            }
+            paymentMethodsRaw = unique.map(\.rawValue).joined(separator: "\n")
+            paymentMethod = unique.first
+        }
+    }
+
     /// Amount to count towards personal spend/income aggregations.
     /// For split transactions this is the user's own share; otherwise the full amount.
     nonisolated var effectiveAmount: Double {
@@ -65,6 +104,15 @@ extension Transaction {
     nonisolated var isExcludedFromFlow: Bool {
         type.isExcludedFromFlow || isLendingRepayment || isCardPaymentSettlement
     }
+}
+
+struct AdditionalPaymentMethod: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var method: PaymentMethod
+    var detail: String = ""
+    var amount: Double?
+    var upiApp: String = ""
+    var accountBackupID: UUID?
 }
 
 enum TransactionType: String, Codable, CaseIterable {
@@ -127,4 +175,16 @@ extension TransactionType {
 
 enum PaymentMethod: String, Codable, CaseIterable {
     case cash = "Cash", upi = "UPI", card = "Card", netBanking = "Net Banking", wallet = "Wallet", other = "Other"
+}
+
+extension PaymentMethod {
+    static func inferred(fromEmailValue value: String) -> PaymentMethod? {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.contains("upi") || normalized.contains("vpa") { return .upi }
+        if normalized.contains("card") { return .card }
+        if normalized.contains("bank") || normalized.contains("neft") || normalized.contains("imps") || normalized.contains("rtgs") { return .netBanking }
+        if normalized.contains("wallet") { return .wallet }
+        if normalized.contains("cash") || normalized.contains("atm") { return .cash }
+        return allCases.first { $0.rawValue.lowercased() == normalized }
+    }
 }

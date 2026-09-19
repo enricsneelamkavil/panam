@@ -5,7 +5,7 @@
 
 import SwiftUI
 
-/// Reusable read-only summary for something already paid/contributed.
+/// Reusable read-only summary for something already paid/contributed or bounced.
 /// Model-agnostic counterpart to PaymentConfirmationSheet.
 struct PaymentSummaryView: View {
     @Environment(\.dismiss) private var dismiss
@@ -17,8 +17,10 @@ struct PaymentSummaryView: View {
     let completedDate: Date?
     var amountLabel = "Paid"
     var dateLabel = "Paid On"
-    /// When non-nil, offers an undo action that reverses the payment/contribution.
-    /// The closure is responsible for the underlying model reversal; this view
+    var statusLabel: String? = nil
+    var actionButtonTitle = "Mark as Unpaid"
+    /// When non-nil, offers an undo/action button (e.g. "Mark as Unpaid" or "Mark as Not Bounced").
+    /// The closure is responsible for the underlying model state change; this view
     /// only dismisses afterward.
     var onMarkUnpaid: (() -> Void)? = nil
 
@@ -26,6 +28,10 @@ struct PaymentSummaryView: View {
         NavigationStack {
             Form {
                 Section {
+                    if let statusLabel {
+                        Label(statusLabel, systemImage: "xmark.circle.fill")
+                            .foregroundStyle(.orange)
+                    }
                     LabeledContent("Due Date") {
                         Text(dueDate, format: .dateTime.day().month(.abbreviated).year())
                     }
@@ -37,7 +43,7 @@ struct PaymentSummaryView: View {
                         LabeledContent(amountLabel) {
                             Text(actualAmount,
                                  format: .currency(code: "INR").locale(Locale(identifier: "en_IN")))
-                                .foregroundStyle(.green)
+                                .foregroundStyle(statusLabel == nil ? .green : .orange)
                         }
                     }
                     if let completedDate {
@@ -49,7 +55,7 @@ struct PaymentSummaryView: View {
 
                 if let onMarkUnpaid {
                     Section {
-                        Button("Mark as Unpaid", role: .destructive) {
+                        Button(actionButtonTitle, role: .destructive) {
                             onMarkUnpaid()
                             dismiss()
                         }
